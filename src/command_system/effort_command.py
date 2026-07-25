@@ -102,7 +102,8 @@ def _invalid_msg(raw: str) -> str:
 
 # TS effort.tsx:179 help text. xhigh/max availability is model-dependent;
 # resolve_thinking_effort clamps xhigh to high on models that reject it
-# (wire-probed 2026-07-18: opus-4-8 accepts xhigh; sonnet-4-6/opus-4-6 400).
+# (wire-probed 2026-07-18: opus-4-8 accepts xhigh; sonnet-4-6/opus-4-6 400.
+# 2026-07-25: opus-5 accepts xhigh and max. fable-5 unprobed.)
 _USAGE = (
     "Usage: /effort [low|medium|high|xhigh|max|auto]\n\n"
     "Effort levels:\n"

@@ -514,7 +514,10 @@ describe('GatewayClient NDJSON adapter', () => {
     await replyToControl('list_workflow_commands', { commands: [], ok: true })
     const r = await p
     const effort = r.items.find(i => i.text === '/effort')
-    expect(effort?.hint).toBe('[minimal|low|medium|high|auto|ultracode]')
+    // Must track the backend ladder (VALID_EFFORT_VALUES): xhigh/max are the
+    // levels Claude Opus 5 wants, and `minimal` is a GPT-5 level the backend
+    // rejects — advertising it sent users at a guaranteed error.
+    expect(effort?.hint).toBe('[low|medium|high|xhigh|max|auto|ultracode]')
   })
 
   it('passes workflow argument_hint through to completion items', async () => {

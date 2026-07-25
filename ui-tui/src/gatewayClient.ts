@@ -360,7 +360,11 @@ const SLASHES: ReadonlyArray<{ desc: string; hint?: string; name: string }> = [
   { desc: 'Toggle extended thinking', hint: '[on|off|toggle]', name: '/thinking' },
   {
     desc: 'Set reasoning effort (or "ultracode" workflow mode)',
-    hint: '[minimal|low|medium|high|auto|ultracode]',
+    // The real ladder is VALID_EFFORT_VALUES (agent_server _do_set_effort).
+    // This used to advertise `minimal` — a GPT-5 level the backend now
+    // rejects — while omitting xhigh and max, the two levels Claude Opus 5
+    // actually wants for coding/agentic work.
+    hint: '[low|medium|high|xhigh|max|auto|ultracode]',
     name: '/effort'
   },
   { desc: 'Switch the provider', hint: '[<provider>]', name: '/provider' },
@@ -1139,7 +1143,18 @@ export class GatewayClient extends EventEmitter {
           return out('Ultracode on: workflow auto-orchestration for this session (reset with /effort high).')
         }
 
-        return out(`Effort: ${r?.effort ?? arg ?? '(unchanged)'}.`)
+        // Keep the model-line badge in step with the new level (the backend
+        // only sends reasoning_effort on the init frame).
+        if (this.sessionInfo && typeof r?.effort === 'string') {
+          this.sessionInfo.reasoning_effort = r.effort === 'default' ? undefined : r.effort
+          this.publish({ payload: this.sessionInfo, session_id: this.sessionId, type: 'session.info' })
+        }
+
+        // `note` carries a caveat the level alone doesn't convey — today:
+        // extended thinking is off, which discards effort entirely.
+        const note = typeof r?.note === 'string' && r.note ? ` ${r.note}` : ''
+
+        return out(`Effort: ${r?.effort ?? arg ?? '(unchanged)'}.${note}`)
       }
 
       case 'mode': {
@@ -1207,8 +1222,11 @@ export class GatewayClient extends EventEmitter {
 
       case 'thinking': {
         const r = (await this.controlQuery('set_thinking', { action: arg ?? 'toggle' })) as any
+        // `note` warns when turning thinking off discards an effort level
+        // the user already set (effort rides inside the thinking block).
+        const note = typeof r?.note === 'string' && r.note ? ` ${r.note}` : ''
 
-        return out(`Thinking ${r?.thinking ? 'on' : 'off'}.`)
+        return out(`Thinking ${r?.thinking ? 'on' : 'off'}.${note}`)
       }
 
       case 'bg': {
@@ -1983,6 +2001,9 @@ export class GatewayClient extends EventEmitter {
       model: String(init.model ?? ''),
       permission_mode: typeof init.permission_mode === 'string' ? init.permission_mode : undefined,
       profile_name: init.provider ? String(init.provider) : undefined,
+      // Rendered beside the model name; the backend sends the session's
+      // /effort level (seeded from --effort at launch), null when unset.
+      reasoning_effort: typeof init.reasoning_effort === 'string' ? init.reasoning_effort : undefined,
       skills: {},
       tools: { '': toolNames },
       // The app gates "ready" on info.version (useSessionLifecycle:227) and the

@@ -756,10 +756,9 @@ def execute_client_advisor(
     # Detect the provider type to send the right shape — sending both
     # forms blindly would either be ignored (best case) or fail
     # validation (worst case, on Anthropic).
-    from src.providers.anthropic_provider import AnthropicProvider
-    from src.providers.minimax_provider import MinimaxProvider
+    from src.providers import is_anthropic_wire
 
-    is_anthropic_shape = isinstance(provider, (AnthropicProvider, MinimaxProvider))
+    is_anthropic_shape = is_anthropic_wire(provider)
 
     call_kwargs: dict[str, Any] = {
         "tools": [],

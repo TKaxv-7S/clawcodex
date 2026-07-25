@@ -39,9 +39,12 @@ Agent kwargs (``--ak key=value``):
   own default of 50 is too low for terminal-bench tasks). The
   ``CLAWCODEX_MAX_TURNS`` host env var works as a fallback.
 * ``effort`` — clawcodex ``--effort`` (low|medium|high|xhigh|max) for
-  models that support ``output_config.effort`` (Opus 4.6/4.8, Sonnet 4.6,
-  Fable 5). ``xhigh`` is model-dependent (opus-4-8 yes; sonnet-4-6/
-  opus-4-6 no) — clawcodex degrades it to ``high`` where rejected.
+  models that support ``output_config.effort`` (Opus 5, Opus 4.6/4.8,
+  Sonnet 4.6, Fable 5). ``xhigh`` is model-dependent (opus-5/opus-4-8 yes;
+  sonnet-4-6/opus-4-6 no) — clawcodex degrades it to ``high`` where
+  rejected. A model missing from clawcodex's effort allowlist drops the
+  flag SILENTLY, so a new model needs a clawcodex build that registers it
+  (see ``source`` below) before an effort number means anything.
   ``CLAWCODEX_EFFORT`` host env var works as a fallback.
 * ``version`` — pin a ``clawcodex-cli`` PyPI version (default: latest).
 * ``source`` — full pip-installable spec overriding the PyPI package, e.g.

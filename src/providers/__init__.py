@@ -23,7 +23,10 @@ PROVIDER_INFO: dict[str, ProviderInfo] = {
         "available_models": [
             # Frontier (above Opus tier)
             "claude-fable-5",
-            # Claude 4 series (latest)
+            # Claude 5 series (Opus tier; sonnet-5 not registered yet —
+            # it needs the same model-table entry opus-5 got)
+            "claude-opus-5",
+            # Claude 4 series
             "claude-sonnet-4-6",
             "claude-sonnet-4-5",
             "claude-sonnet-4-5-20250929",
@@ -294,6 +297,33 @@ def provider_env_vars(provider_name: str) -> tuple[str, ...]:
     return spec.env_vars if spec else ()
 
 
+def is_anthropic_wire(provider: Any) -> bool:
+    """Whether ``provider`` speaks the ANTHROPIC request shape.
+
+    The single source of truth for a decision several call sites have to
+    agree on, because the two families take the same concepts as different
+    parameters and sending the wrong one is a hard 400:
+
+    * reasoning effort — ``output_config.effort`` here vs a top-level
+      ``reasoning_effort`` body field on OpenAI-compatible providers,
+    * the system prompt — a ``system`` kwarg here vs a prepended
+      ``{"role": "system"}`` message there.
+
+    Minimax is included because it speaks the Anthropic shape. A custom
+    ``base_url`` / third-party gateway is a FLAG on AnthropicProvider
+    (``has_custom_endpoint``), never a subclass, so an isinstance test
+    cannot be fooled by one. Takes a provider INSTANCE, not a name — the
+    class is what carries the wire contract.
+
+    Imports are local: this module is imported at startup by the fast-path
+    CLI, and the provider modules pull in their SDKs.
+    """
+    from .anthropic_provider import AnthropicProvider
+    from .minimax_provider import MinimaxProvider
+
+    return isinstance(provider, (AnthropicProvider, MinimaxProvider))
+
+
 def provider_requires_api_key(provider_name: str) -> bool:
     """Whether a provider needs an API key.
 
@@ -377,6 +407,7 @@ __all__ = [
     "ChatResponse",
     "get_provider_class",
     "get_provider_info",
+    "is_anthropic_wire",
     "canonical_provider_name",
     "provider_env_vars",
     "provider_has_credentials",

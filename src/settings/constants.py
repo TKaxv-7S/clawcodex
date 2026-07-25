@@ -50,6 +50,8 @@ DEFAULT_SETTINGS = SettingsSchema(
 # resolve_thinking_effort (src/query/query.py) clamps it to "high" on
 # models that reject it (probed 2026-07-18: opus-4-8 accepts; sonnet-4-6
 # and opus-4-6 return 400 "does not support effort level 'xhigh'").
+# opus-5 carries the full ladder (probed 2026-07-25: xhigh and max both
+# accepted). fable-5 is documentation-derived, still unprobed.
 VALID_EFFORT_VALUES = ("", "low", "medium", "high", "xhigh", "max")
 
 # Known valid output styles

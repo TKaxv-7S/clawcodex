@@ -66,9 +66,46 @@ class TestModelConfigs:
         assert get_model_config("totally-unknown-model") is None
 
     def test_prefix_match(self):
+        # The fallback exists for date/suffix variants of a registered id.
         cfg = get_model_config("claude-sonnet-4-20250514-v2")
-        # Should match on prefix
-        assert cfg is not None or cfg is None  # Prefix may or may not match depending on format
+        assert cfg is not None
+        assert cfg.model_id == "claude-sonnet-4-20250514"
+
+    def test_prefix_match_is_insertion_ordered_for_opus(self):
+        """Pin who wins the ``claude-opus*`` fallback, in order.
+
+        ``get_model_config`` walks MODEL_CONFIGS in insertion order and
+        matches on ``key.rsplit("-", 1)[0]``. The opus rows therefore have
+        two different bases — ``claude-opus-4`` (from the legacy dated key)
+        and the family-wide ``claude-opus`` (from ``claude-opus-5``) — and
+        the legacy one is registered first. Unregistered 4.x ids must keep
+        resolving to the legacy 200K row (under-estimating the window is
+        the safe direction), while opus-5 itself gets 1M.
+        """
+        assert get_model_config("claude-opus-5").context_window == 1_000_000
+        assert get_model_config("claude-opus-5-20260701").model_id == "claude-opus-5"
+        # Registered exactly — not via any prefix.
+        assert get_model_config("claude-opus-4-8").context_window == 1_000_000
+        # Unregistered 4.x → legacy row, NOT the opus-5 row.
+        for unregistered in ("claude-opus-4-7", "claude-opus-4-5", "claude-opus-4-9"):
+            cfg = get_model_config(unregistered)
+            assert cfg.model_id == "claude-opus-4-20250514", unregistered
+            assert cfg.context_window == 200_000, unregistered
+
+    def test_family_base_captures_bare_opus_strings(self):
+        """The accepted cost of registering ``claude-opus-5``.
+
+        Its base is the family-wide ``claude-opus``, so the bare alias
+        string and any future ``claude-opus-<n>`` now resolve to the
+        opus-5 row rather than falling through to None/200K. Pinned
+        because it is a deliberate trade, not an accident: if a future
+        Opus ships a different window, this test is where it bites.
+        ``claude-opus`` is a MODEL_ALIASES key resolving to Opus 4, so
+        display of the UNRESOLVED alias reads "Claude Opus 5" — callers
+        are expected to canonicalize first.
+        """
+        assert get_model_config("claude-opus").model_id == "claude-opus-5"
+        assert get_model_config("claude-opus-6").model_id == "claude-opus-5"
 
     def test_deprecated_model_flag(self):
         cfg = get_model_config("claude-3-5-sonnet-20240620")

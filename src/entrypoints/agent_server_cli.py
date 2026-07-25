@@ -131,6 +131,14 @@ def run_agent_server_subcommand(argv: list[str]) -> int:
     parser.add_argument("--provider", default=None, help="Provider name override.")
     parser.add_argument("--model", default=None, help="Model override.")
     parser.add_argument(
+        "--effort", default=None,
+        choices=("low", "medium", "high", "xhigh", "max"),
+        help="Reasoning effort for the session. Seeds /effort; routed to "
+             "output_config.effort on Anthropic and reasoning_effort on "
+             "OpenAI-compatible providers. (_build_runtime re-validates, "
+             "because --stdio callers bypass this parser.)",
+    )
+    parser.add_argument(
         "--fallback-model", default=None, dest="fallback_model",
         help="Model to switch to after repeated overloaded (529) errors "
              "(session-sticky; never persisted).",
@@ -233,6 +241,7 @@ def run_agent_server_subcommand(argv: list[str]) -> int:
     agent_config = AgentServerConfig(
         provider_name=args.provider,
         model=args.model,
+        effort=args.effort,
         fallback_model=args.fallback_model,
         permission_mode=args.permission_mode,
         is_bypass_available=is_bypass_available,

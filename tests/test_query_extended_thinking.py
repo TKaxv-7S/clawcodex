@@ -105,6 +105,8 @@ class TestThinkingAllowlists(unittest.TestCase):
         ("claude-opus-4-6", True, True, True),
         ("claude-opus-4-8", True, True, True),
         ("claude-fable-5", True, True, True),
+        ("claude-opus-5", True, True, True),
+        ("claude-opus-5-20260701", True, True, True),  # dated snapshot
         ("claude-opus-4-7", True, True, False),   # adaptive but NOT effort
         ("claude-sonnet-4-5", True, False, False),
         ("claude-haiku-4-5", True, False, False),
@@ -121,11 +123,28 @@ class TestThinkingAllowlists(unittest.TestCase):
 
     def test_xhigh_effort_allowlist(self):
         # Wire-probed 2026-07-18: opus-4-8 accepts xhigh; sonnet-4-6 and
-        # opus-4-6 400 on it (fable-5 by analogy with opus-4-8).
+        # opus-4-6 400 on it (fable-5 by analogy with opus-4-8; opus-5
+        # ships the full low..max ladder).
         self.assertTrue(_model_supports_xhigh_effort("claude-opus-4-8"))
         self.assertTrue(_model_supports_xhigh_effort("claude-fable-5"))
+        self.assertTrue(_model_supports_xhigh_effort("claude-opus-5"))
         for model in ("claude-opus-4-6", "claude-sonnet-4-6", None):
             self.assertFalse(_model_supports_xhigh_effort(model), model)
+
+    def test_opus_5_is_thinking_eligible_so_adaptive_is_load_bearing(self):
+        """Why opus-5 MUST be on the adaptive allowlist.
+
+        The regex-based ``_model_supports_extended_thinking`` already says
+        True for opus-5 (it needs no allowlist entry), so the loop will
+        always emit *some* thinking config. The adaptive allowlist is the
+        only thing deciding whether that config is ``{"type": "adaptive"}``
+        or the ``budget_tokens`` form — and ``budget_tokens`` is REMOVED on
+        Opus 5, i.e. a 400 on every request. The emitted dict itself is
+        asserted in TestExtendedThinkingInjection.
+        """
+        for model in ("claude-opus-5", "anthropic/claude-opus-5"):
+            self.assertTrue(_model_supports_extended_thinking(model), model)
+            self.assertTrue(_model_supports_adaptive_thinking(model), model)
 
 
 class TestResolveThinkingEffort(unittest.TestCase):
@@ -271,6 +290,23 @@ class TestExtendedThinkingInjection(unittest.TestCase):
         kw = self._drive_one_turn(provider)
         self.assertEqual(kw.get("thinking"), {"type": "adaptive"})
         self.assertNotIn("output_config", kw)
+
+    def test_anthropic_opus_5_adaptive_plus_requested_effort(self):
+        # The terminal-bench configuration: opus-5 at effort=high must put
+        # adaptive thinking on the wire (budget_tokens is REMOVED on Opus 5
+        # — the fallback path would 400 every request) AND carry the
+        # requested effort (dropping it silently would mean an "effort=high"
+        # eval run that never asked for high).
+        provider = _make_anthropic_mock("claude-opus-5")
+        kw = self._drive_one_turn(provider, thinking_effort="high")
+        self.assertEqual(kw.get("thinking"), {"type": "adaptive"})
+        self.assertEqual(kw.get("output_config"), {"effort": "high"})
+
+    def test_anthropic_opus_5_keeps_xhigh(self):
+        # opus-5 carries the full ladder, so xhigh must NOT be clamped.
+        provider = _make_anthropic_mock("claude-opus-5")
+        kw = self._drive_one_turn(provider, thinking_effort="xhigh")
+        self.assertEqual(kw.get("output_config"), {"effort": "xhigh"})
 
     def test_anthropic_legacy_3x_does_NOT_get_thinking(self):
         # 3.x models reject the parameter at the API layer — the helper

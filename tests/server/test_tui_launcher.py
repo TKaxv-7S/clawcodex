@@ -45,6 +45,109 @@ def test_agent_server_cmd_invokes_module():
     assert "--allow-dangerously-skip-permissions" not in cmd
 
 
+def test_agent_server_cmd_forwards_effort():
+    """``--effort`` must reach the backend the client spawns.
+
+    The flag used to be plumbed only into HeadlessOptions, so
+    ``clawcodex --model claude-opus-5 --effort xhigh`` (interactive, no
+    ``-p``) parsed it and silently ran at the API default. The chain is
+    cli/launcher → this command → agent_server_cli → AgentServerConfig.effort
+    → the session's /effort level; every hop is load-bearing, and a dropped
+    hop is invisible at runtime (no error, just the wrong effort).
+    """
+    class _Args:
+        permission_mode = "default"
+        provider = "anthropic"
+        model = "claude-opus-5"
+        effort = "xhigh"
+
+    cmd = _agent_server_cmd(_Args())
+    i = cmd.index("--effort")
+    assert cmd[i + 1] == "xhigh"
+
+    class _NoEffort:
+        permission_mode = "default"
+        provider = None
+        model = None
+        effort = None
+
+    assert "--effort" not in _agent_server_cmd(_NoEffort())
+
+
+def test_print_connect_forwards_effort():
+    """The ``--print-connect`` route runs the server in-process, so it needs
+    the flag on its own argv list — a separate hop from _agent_server_cmd."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    seen: dict = {}
+
+    with patch(
+        "src.entrypoints.tui_launcher.run_agent_server_subcommand",
+        lambda argv: seen.setdefault("argv", argv) and 0 or 0,
+    ):
+        from src.entrypoints.tui_launcher import _print_connect
+
+        _print_connect(SimpleNamespace(
+            workspace=None, permission_mode="default", is_bypass_available=False,
+            provider="anthropic", model="claude-opus-5", effort="xhigh",
+        ))
+
+    argv = seen["argv"]
+    assert argv[argv.index("--effort") + 1] == "xhigh"
+
+
+def test_interactive_entry_forwards_effort_to_launch_ink_tui(monkeypatch, tmp_path):
+    """``clawcodex --model X --effort xhigh`` (no -p) must reach the TUI.
+
+    Pins the cli.py hop specifically: the flag lives in the argparse
+    "noninteractive" group for --help grouping, which is exactly how it came
+    to be forwarded only to HeadlessOptions.
+    """
+    import src.cli as cli
+
+    seen: dict = {}
+    monkeypatch.setattr(
+        "src.entrypoints.tui_launcher.launch_ink_tui",
+        lambda **kw: seen.update(kw) or 0,
+    )
+    monkeypatch.setattr(cli, "run_pre_action", lambda args: None, raising=False)
+    # HOME is a temp dir, so there are no credentials — the startup provider
+    # gate would SystemExit(2) before reaching the launch call under test.
+    monkeypatch.setattr(
+        "src.entrypoints.provider_validation.validate_provider_at_startup",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(sys, "argv", [
+        "clawcodex", "--model", "claude-opus-5", "--effort", "xhigh",
+    ])
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    assert cli.main() == 0
+    assert seen.get("effort") == "xhigh", f"effort dropped by cli.main: {seen!r}"
+    assert seen.get("model") == "claude-opus-5"
+
+
+def test_launcher_forwards_effort_to_the_ink_tui(tmp_path, monkeypatch):
+    """``clawcodex tui --effort`` must not parse-and-drop the flag.
+
+    Regression: the standalone launcher grew the argparse entry while its
+    ``launch_ink_tui`` call still omitted ``effort=``, which parses cleanly
+    and silently loses the level.
+    """
+    seen: dict = {}
+
+    def _fake_launch(**kwargs):
+        seen.update(kwargs)
+        return 0
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("src.entrypoints.tui_launcher.launch_ink_tui", _fake_launch)
+    rc = run_tui_launcher(["--workspace", str(tmp_path), "--effort", "xhigh"])
+    assert rc == 0
+    assert seen.get("effort") == "xhigh", f"effort dropped: {seen!r}"
+
+
 def test_agent_server_cmd_forwards_bypass_availability():
     """Resolved availability rides to the backend as --allow-dangerously-…,
     so Shift+Tab / /mode can reach bypassPermissions at runtime."""
@@ -76,6 +179,49 @@ def _flag_probe_stub(tmp_path, monkeypatch, expect: str) -> None:
         """
     ))
     monkeypatch.setenv("CLAWCODEX_TUI_CMD", f"{sys.executable} {child}")
+
+
+def test_launcher_end_to_end_puts_effort_on_the_backend_cmd(tmp_path, monkeypatch):
+    """Cross the launcher→SimpleNamespace→argv hops with NO mock between them.
+
+    The kwarg-level tests around this one stop at ``launch_ink_tui`` and the
+    argv-level test starts after it, so the ``effort=effort`` entry in the
+    SimpleNamespace that ``launch_ink_tui`` builds sat in the seam between
+    two mocks — deletable with the whole suite green. That is the hop that
+    actually broke once during this work (parser entry added, call site not),
+    so it gets an unmocked probe: this asserts on the real
+    CLAWCODEX_AGENT_SERVER_CMD the launcher hands the client.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+    _flag_probe_stub(tmp_path, monkeypatch, "--effort xhigh")
+    rc = run_tui_launcher(["--workspace", str(tmp_path), "--effort", "xhigh"])
+    assert rc == 0, "expected --effort xhigh in the spawned backend cmd"
+
+
+def test_agent_server_cli_maps_effort_onto_the_config(monkeypatch, tmp_path):
+    """``--effort`` must land on AgentServerConfig, the last hop before the seed.
+
+    Dropping this mapping makes the backend parse the flag and discard it on
+    EVERY launch path — interactive, ``clawcodex tui``, ``--print-connect``,
+    and the vscode ``--stdio`` route — with no error anywhere.
+    """
+    from src.entrypoints import agent_server_cli
+
+    seen: dict = {}
+
+    def _capture(workspace, agent_config):
+        seen["effort"] = agent_config.effort
+        return 0
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(agent_server_cli, "_serve_stdio", lambda w, c: _capture(w, c))
+    monkeypatch.setattr(
+        "asyncio.run", lambda coro, **k: coro if isinstance(coro, int) else 0
+    )
+    agent_server_cli.run_agent_server_subcommand(
+        ["--stdio", "--effort", "xhigh", "--workspace", str(tmp_path)]
+    )
+    assert seen.get("effort") == "xhigh", f"effort dropped before the config: {seen!r}"
 
 
 def test_launcher_dsp_flag_starts_backend_in_bypass(tmp_path, monkeypatch):
