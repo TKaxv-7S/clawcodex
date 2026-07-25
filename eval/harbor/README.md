@@ -54,7 +54,7 @@ PYTHONPATH=$PWD/eval/harbor harbor run \
 NOTE: hub datasets namespace task names — filters must match the full
 name: `-i 'terminal-bench/fix-git'` (or use a glob: `-i '*fix-git*'`).
 
-## Evaluate with claude-opus-4-8 on a Claude subscription
+## Evaluate with claude-opus-5 on a Claude subscription
 
 Uses your Claude Pro/Max subscription (OAuth) instead of an API key.
 One-time prerequisite on the host: `clawcodex login` (writes
@@ -70,9 +70,10 @@ covers only the main loop).
 PYTHONPATH=$PWD/eval/harbor harbor run \
   --dataset terminal-bench/terminal-bench-2-1 \
   --agent clawcodex_agent:Clawcodex \
-  --model anthropic/claude-opus-4-8 \
+  --model anthropic/claude-opus-5 \
   --ak subscription=true \
   --ak effort=high \
+  --ak source=git+https://github.com/agentforce314/clawcodex@main \
   --jobs-dir eval/harbor/jobs \
   --n-concurrent 2
 ```
@@ -82,10 +83,21 @@ Notes:
   resources. Keep Harbor's default timeout policy for leaderboard-comparable
   runs; use timeout multipliers only for explicitly labeled diagnostics.
 - `effort=high` maps to `clawcodex --effort high` →
-  `output_config.effort` on effort-capable models (Opus 4.6/4.8,
+  `output_config.effort` on effort-capable models (Opus 5, Opus 4.6/4.8,
   Sonnet 4.6, Fable 5). Requires clawcodex > 1.2.1 in the container —
-  until the next PyPI release, add
-  `--ak source=git+https://github.com/agentforce314/clawcodex@main`.
+  until the next PyPI release, keep the
+  `--ak source=git+https://github.com/agentforce314/clawcodex@main` above.
+- **claude-opus-5 needs a clawcodex that registers it** (the model tables
+  in `src/models/configs.py`, `src/services/pricing.py`, and the three
+  gates in `src/query/query.py`). On a build without it, opus-5 falls off
+  the adaptive-thinking allowlist and the request carries
+  `thinking={"type": "enabled", "budget_tokens": …}` — removed on Opus 5,
+  so **every request 400s** — while `--effort` is silently dropped and the
+  context window is assumed to be 200K instead of 1M (early compaction,
+  the handicap #730 removed for opus-4-8). PyPI 1.2.1 predates this, so
+  `source=` is required; verify the branch/SHA you point it at actually
+  carries the registration before starting a full run, and prefer a
+  commit SHA over `@main` for anything you plan to compare later.
 - Subscription rate limits are shared with your interactive Claude
   usage — keep `--n-concurrent` low (2-4) and consider
   `--max-retries 2 --retry-include ApiRateLimitError`.
@@ -105,7 +117,7 @@ token), so multi-hour jobs work without a manually exported token:
 PYTHONPATH=$PWD/eval/harbor harbor run \
   --dataset terminal-bench/terminal-bench-2-1 \
   --agent claude_code_subscription:ClaudeCodeSubscription \
-  --model anthropic/claude-opus-4-8 \
+  --model anthropic/claude-opus-5 \
   --ak reasoning_effort=high \
   --jobs-dir eval/harbor/jobs \
   --n-concurrent 2
@@ -114,8 +126,16 @@ PYTHONPATH=$PWD/eval/harbor harbor run \
 Notes:
 - Effort uses the parent agent's kwarg name: `--ak reasoning_effort=`
   (low|medium|high|xhigh|max).
+- The model is forwarded as the `ANTHROPIC_MODEL` env var with the
+  provider prefix stripped (`harbor/agents/installed/claude_code.py`
+  :1372-1386 — so don't expect a `--model` on the exec line when
+  debugging), and effort as the `--effort` CLI flag. Neither is gated on
+  a model table anywhere in the adapter, and the bootstrap installs the
+  latest official CLI in every container, so moving this arm to a new
+  model is the model string alone — no adapter or clawcodex change.
 - Pin the CLI to a leaderboard row's version with `--ak version=2.1.205`
-  (default: latest).
+  (default: latest). A pin predating a model's support will fail on that
+  model, so re-check the pin when changing `--model`.
 - `CLAUDE_FORCE_OAUTH` is set by the wrapper, so a host
   `ANTHROPIC_API_KEY` can never silently take over and bill the API.
 - `--ak subprocess_env_scrub=true` enables the CLI's subprocess-env scrub
@@ -158,9 +178,19 @@ Notes:
 - Subscription auth is env-only (`CLAUDE_CODE_OAUTH_TOKEN` access token,
   no refresh token, no credential file in the container); the same
   30-min-runway host refresh as the clawcodex adapter applies.
-- This openclaude snapshot's effort ladder is low|medium|high|max (no
-  xhigh), and its model metadata predates claude-opus-4-8, so it assumes
-  a conservative 128k context for compaction purposes.
+- This openclaude snapshot (0.24.0) knows claude-opus-4-8 but **not
+  claude-opus-5**, and on opus-5 it does not merely degrade — it breaks.
+  `modelSupportsAdaptiveThinking` (`typescript/src/utils/thinking.ts:159`)
+  allowlists only opus-4-8/4-7/4-6 and sonnet-4-6, then excludes anything
+  else matching `opus`, so opus-5 falls to the `budget_tokens` branch at
+  `typescript/src/services/api/claude.ts:1731` — and `budget_tokens` is
+  removed on Opus 5, i.e. **HTTP 400 on every request** (the same failure
+  the clawcodex adapter's `source=` note describes). Model metadata is
+  missing too, so the context window falls back to the 200K default
+  (`typescript/src/utils/context.ts:17`). Keep this arm on
+  `anthropic/claude-opus-4-8` until `typescript/` is refreshed to a
+  snapshot carrying opus-5.
+- Its effort ladder is low|medium|high|xhigh|max as of 0.24.0.
 
 ## Evaluate ALL terminal-bench 2.0 tasks
 
@@ -193,7 +223,7 @@ aggregate accuracy; each trial dir has the agent's stream-json log under
 # Agent kwargs
   --ak max_turns=100        # clawcodex --max-turns (default 300)
   --ak effort=high          # clawcodex --effort (low|medium|high|xhigh|max)
-                            # xhigh is model-dependent (opus-4-8 yes,
+                            # xhigh is model-dependent (opus-5/opus-4-8 yes,
                             # sonnet-4-6/opus-4-6 no → degraded to high)
   --ak version=1.2.1        # pin the clawcodex-cli PyPI version
   --ak source=git+https://github.com/agentforce314/clawcodex@main
@@ -205,6 +235,7 @@ aggregate accuracy; each trial dir has the agent's stream-json log under
 
 # Other models/providers (Harbor convention: provider/model)
   --model deepseek/deepseek-v4-pro
+  --model anthropic/claude-opus-4-8   # the previous tb2.1 baseline
   --model anthropic/claude-opus-4-5   # needs ANTHROPIC_API_KEY
 ```
 

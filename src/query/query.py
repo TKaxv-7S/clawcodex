@@ -466,11 +466,15 @@ def _model_supports_adaptive_thinking(model: str | None) -> bool:
     adaptive to a non-adaptive model is rejected with HTTP 400 "adaptive
     thinking is not supported on this model". Allowlist ported from TS
     ``modelSupportsAdaptiveThinking`` (thinking.ts:152-169): Opus 4.6/4.7
-    and Sonnet 4.6; extended with Opus 4.8 and Fable 5, where adaptive is
-    the ONLY accepted thinking config — the budget fallback below would be
-    a hard 400 on them (``budget_tokens`` is removed on 4.7+; Fable 5 also
-    rejects ``{"type": "disabled"}``, and accepts adaptive or an omitted
-    param). Substring match mirrors the reference's ``.includes()`` so
+    and Sonnet 4.6; extended with Opus 4.8, Opus 5 and Fable 5, where
+    adaptive is the ONLY accepted thinking config — the budget fallback
+    below would be a hard 400 on them (``budget_tokens`` is removed on
+    4.7+; Fable 5 also rejects ``{"type": "disabled"}``, and accepts
+    adaptive or an omitted param). On Opus 5 thinking is ON by default, so
+    ``{"type": "adaptive"}`` is equivalent to omitting the param; the one
+    combination it rejects is ``{"type": "disabled"}`` at effort xhigh/max,
+    which this code never emits (it sends adaptive or budget, never
+    disabled). Substring match mirrors the reference's ``.includes()`` so
     dated snapshots (``claude-sonnet-4-6-20250929``) match.
     """
     if not model:
@@ -478,6 +482,7 @@ def _model_supports_adaptive_thinking(model: str | None) -> bool:
     m = model.lower()
     return (
         "fable-5" in m
+        or "opus-5" in m
         or "opus-4-8" in m
         or "opus-4-7" in m
         or "opus-4-6" in m
@@ -488,17 +493,22 @@ def _model_supports_adaptive_thinking(model: str | None) -> bool:
 def _model_supports_effort(model: str | None) -> bool:
     """True iff the model accepts ``output_config={"effort": ...}``.
 
-    Narrower than thinking support — Opus 4.6/4.8, Sonnet 4.6, and Fable 5
-    (TS ``modelSupportsEffort``, effort.ts:32-51, plus the 4.8/Fable
-    additions where effort is GA). Sending effort to a model that doesn't
-    support it is rejected, so the caller gates on this independently of
-    the thinking type.
+    Narrower than thinking support — Opus 4.6/4.8, Opus 5, Sonnet 4.6, and
+    Fable 5 (TS ``modelSupportsEffort``, effort.ts:32-51, plus the
+    4.8/Fable/Opus-5 additions where effort is GA). Sending effort to a
+    model that doesn't support it is rejected, so the caller gates on this
+    independently of the thinking type. Being absent here is silent, not
+    fatal: the request succeeds with the API's own default effort and a
+    requested ``--effort`` is dropped on the floor — which is why a new
+    effort-capable model has to be added here, not just to the thinking
+    allowlist.
     """
     if not model:
         return False
     m = model.lower()
     return (
         "fable-5" in m
+        or "opus-5" in m
         or "opus-4-8" in m
         or "opus-4-6" in m
         or "sonnet-4-6" in m
@@ -517,11 +527,25 @@ def _model_supports_xhigh_effort(model: str | None) -> bool:
     snapshot's opus-4-6-only ``modelSupportsMaxEffort`` predates this).
     Fable 5 is included by analogy with opus-4-8 (Claude Code exposes the
     full ladder on it; unprobed — subscription plans don't carry it).
+    Opus 5 carries the full ladder (low|medium|high|xhigh|max), with xhigh
+    the recommended setting for coding/agentic work — wire-probed
+    2026-07-25 over subscription OAuth: ``claude-opus-5`` + adaptive
+    thinking accepts both ``xhigh`` and ``max`` (200, ``stop_reason:
+    end_turn``).
+
+    Note which direction is safe: an entry MISSING from this allowlist is
+    harmless to the REQUEST (resolve_thinking_effort clamps xhigh to high)
+    though a requested xhigh is then silently downgraded — the same quiet
+    failure the effort allowlist above warns about. A WRONG entry is
+    outright fatal: being listed here sends xhigh to the wire, and a 400
+    on the effort level is not retried or downgraded anywhere, so every
+    request fails. Add a model here on documentation or a probe, never on
+    the theory that a bad guess degrades gracefully.
     """
     if not model:
         return False
     m = model.lower()
-    return "opus-4-8" in m or "fable-5" in m
+    return "opus-5" in m or "opus-4-8" in m or "fable-5" in m
 
 
 # Kept in sync with settings.constants.VALID_EFFORT_VALUES (minus the empty
@@ -933,10 +957,10 @@ async def _call_model_sync(
         # reject the advisor beta, and 1P-with-force-client doesn't
         # need it because the advisor schema is a regular tool here.
 
+    from ..providers import is_anthropic_wire
     from ..providers.anthropic_provider import AnthropicProvider
-    from ..providers.minimax_provider import MinimaxProvider
 
-    is_anthropic = isinstance(provider, (AnthropicProvider, MinimaxProvider))
+    is_anthropic = is_anthropic_wire(provider)
     if deferred_tool_names and isinstance(provider, AnthropicProvider):
         has_custom_endpoint = getattr(provider, "has_custom_endpoint", None)
         if not callable(has_custom_endpoint) or not has_custom_endpoint():

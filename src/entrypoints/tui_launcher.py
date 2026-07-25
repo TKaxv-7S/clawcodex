@@ -51,6 +51,12 @@ def run_tui_launcher(argv: list[str]) -> int:
     )
     parser.add_argument("--provider", default=None)
     parser.add_argument("--model", default=None)
+    # choices= so a bad level is a clean argparse error rather than a value
+    # that silently resolves to settings.effort downstream (the server also
+    # validates the seed, since it can be driven without a parser).
+    parser.add_argument("--effort", default=None,
+                        choices=("low", "medium", "high", "xhigh", "max"),
+                        help="Reasoning effort — seeds the session's /effort level")
     parser.add_argument("--permission-mode", default="default", dest="permission_mode")
     parser.add_argument(
         "--dangerously-skip-permissions", action="store_true",
@@ -151,6 +157,7 @@ def run_tui_launcher(argv: list[str]) -> int:
     return launch_ink_tui(
         provider=args.provider,
         model=args.model,
+        effort=args.effort,
         permission_mode=mode,
         is_bypass_available=is_bypass_available,
         workspace=args.workspace,
@@ -163,6 +170,7 @@ def launch_ink_tui(
     *,
     provider: str | None = None,
     model: str | None = None,
+    effort: str | None = None,
     permission_mode: str = "default",
     is_bypass_available: bool = False,
     workspace: str | None = None,
@@ -186,6 +194,7 @@ def launch_ink_tui(
     args = SimpleNamespace(
         provider=provider,
         model=model,
+        effort=effort,
         permission_mode=permission_mode,
         is_bypass_available=is_bypass_available,
         workspace=workspace,
@@ -256,6 +265,8 @@ def _agent_server_cmd(args) -> list[str]:
         cmd += ["--provider", args.provider]
     if args.model:
         cmd += ["--model", args.model]
+    if getattr(args, "effort", None):
+        cmd += ["--effort", args.effort]
     return cmd
 
 
@@ -307,6 +318,7 @@ def _print_connect(args) -> int:
           if getattr(args, "is_bypass_available", False) else []),
         *(["--provider", args.provider] if args.provider else []),
         *(["--model", args.model] if args.model else []),
+        *(["--effort", args.effort] if getattr(args, "effort", None) else []),
         "--workspace", workspace,
     ])
 

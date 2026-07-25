@@ -88,6 +88,40 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
         cost_cache_create_per_mtok=12.50,
         cost_cache_read_per_mtok=1.00,
     ),
+    # Claude Opus 5 — the current Opus tier, at Opus 4.8's price (5/25 per
+    # MTok) and shape: 1M context (default AND maximum), 128K true output
+    # cap, same 32_000 first-attempt wire ``max_tokens`` convention as the
+    # rows above. Registered LAST among the opus rows because its prefix
+    # base is the family-wide ``claude-opus`` (``key.rsplit("-", 1)[0]``).
+    # Every 4.x id still matches the earlier ``claude-opus-4`` base first,
+    # so their 200K/legacy resolution is unchanged, but two other strings
+    # now land here: an unregistered future ``claude-opus-<n>``, AND the
+    # literal ``claude-opus`` — a live MODEL_ALIASES key (aliases.py:15)
+    # that resolves to claude-opus-4-20250514, so ``display_name()`` on the
+    # UNRESOLVED alias now reads "Claude Opus 5". Callers that canonicalize
+    # first (the normal path) are unaffected; test_model_system pins both.
+    # This inverts the "under-estimate is the safe direction" note above
+    # for unknown opus ids, and over-estimating is the worse failure —
+    # auto-compact never fires and the request eventually exceeds the real
+    # window. Accepted because every Opus since 4.6 ships 1M, and it
+    # matches ``claude-fable-5``, whose base is likewise family-wide.
+    # (``src/services/pricing.py`` deliberately went the other way: its
+    # bare ``claude-opus-4`` prefix was dropped so unknown ids price as
+    # None rather than wrong. A wrong cost is silent; a wrong window is
+    # not — but the directions genuinely differ, so don't "harmonize"
+    # them without re-reading both rationales.)
+    "claude-opus-5": ModelConfig(
+        model_id="claude-opus-5",
+        display_name="Claude Opus 5",
+        context_window=1_000_000,
+        max_output_tokens=32_000,
+        supports_thinking=True,
+        supports_computer_use=True,
+        cost_input_per_mtok=5.0,
+        cost_output_per_mtok=25.0,
+        cost_cache_create_per_mtok=6.25,
+        cost_cache_read_per_mtok=0.50,
+    ),
 
     # Claude 3.7 series
     "claude-3-7-sonnet-20250219": ModelConfig(

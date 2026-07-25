@@ -921,7 +921,10 @@ class AnthropicProvider(BaseProvider):
         return [
             # Frontier (above Opus tier)
             "claude-fable-5",
-            # Claude 4 series (latest)
+            # Claude 5 series (Opus tier; sonnet-5 not registered yet —
+            # it needs the same model-table entry opus-5 got)
+            "claude-opus-5",
+            # Claude 4 series
             "claude-sonnet-4-6",
             "claude-sonnet-4-5",
             "claude-sonnet-4-5-20250929",

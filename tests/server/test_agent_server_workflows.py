@@ -162,6 +162,203 @@ async def test_set_effort_levels_and_ultracode_roundtrip(tmp_path):
         assert r["ok"] is False and "invalid effort" in r["error"]
 
 
+async def test_set_effort_accepts_the_full_claude_ladder(tmp_path):
+    """``xhigh``/``max`` are real Claude levels and must be settable here.
+
+    They were rejected by a hardcoded ``(minimal|low|medium|high)`` list,
+    so ``/effort xhigh`` failed in the interactive TUI while the same value
+    worked via ``--effort``, ``/effort`` on the other surfaces, and
+    settings.effort. Both probed on claude-opus-5 2026-07-25. The ladder is
+    now exactly VALID_EFFORT_VALUES — see
+    test_set_effort_rejects_minimal_on_the_claude_ladder for the one value
+    deliberately NOT carried over.
+    """
+    async with _spawned(tmp_path, _TextProvider) as (handle, gen):
+        sess = _session_of(handle)
+        for i, level in enumerate(("xhigh", "max", "low", "medium", "high")):
+            r = await _control(
+                handle, gen, f"l{i}", {"subtype": "set_effort", "effort": level}
+            )
+            assert r == {"ok": True, "effort": level, "ultracode": False}, level
+            assert sess._effort == level, level
+
+        # The error text must enumerate what is actually accepted, so a
+        # rejected value tells the user the real ladder.
+        r = await _control(handle, gen, "bad", {"subtype": "set_effort", "effort": "bogus"})
+        assert r["ok"] is False
+        for level in ("low", "medium", "high", "xhigh", "max"):
+            assert level in r["error"], f"{level} missing from {r['error']!r}"
+
+
+async def test_effort_routing_matches_the_provider_wire_shape(tmp_path):
+    """Anthropic takes ``output_config.effort``; OpenAI-compat takes a body field.
+
+    Sending the OpenAI shape to Anthropic is a hard 400 (probed 2026-07-25:
+    ``reasoning_effort: Extra inputs are not permitted``), which used to
+    break every request after a ``/effort`` in an interactive Anthropic
+    session. Pin both directions of the split.
+    """
+    from unittest.mock import MagicMock
+
+    from src.providers.anthropic_provider import AnthropicProvider
+    from src.server.agent_server import _EffortProvider
+
+    async with _spawned(tmp_path, _TextProvider) as (handle, gen):
+        sess = _session_of(handle)
+
+        # No effort set → untouched provider, no thinking_effort.
+        sess._effort = None
+        assert sess._turn_effort_routing() == (sess.provider, None)
+
+        # Anthropic → the real provider plus output_config.effort. The
+        # provider must NOT be wrapped: wrapping is what injected the
+        # rejected body field.
+        sess.provider = AnthropicProvider(api_key="sk-test", model="claude-opus-5")
+        sess._effort = "xhigh"
+        provider, thinking_effort = sess._turn_effort_routing()
+        assert provider is sess.provider
+        assert not isinstance(provider, _EffortProvider)
+        assert thinking_effort == "xhigh"
+
+        # OpenAI-compatible → wrapped, and effort stays out of the query
+        # loop's Anthropic-only parameter.
+        sess.provider = MagicMock(name="openai-compat")
+        provider, thinking_effort = sess._turn_effort_routing()
+        assert isinstance(provider, _EffortProvider)
+        assert thinking_effort is None
+        injected = provider._inject({})
+        assert injected["extra_body"]["reasoning_effort"] == "xhigh"
+
+
+async def test_effort_reaches_the_query_loop_kwarg(tmp_path, monkeypatch):
+    """The seam that actually delivers interactive effort to the wire.
+
+    ``_turn_effort_routing`` returning ``"xhigh"`` is inert unless the turn
+    passes it to ``run_query_as_agent_loop`` as ``thinking_effort`` — that
+    single kwarg is what ``resolve_thinking_effort`` turns into
+    ``output_config.effort``. Deleting it leaves every other effort test
+    green, so spy on the call itself.
+
+    Two harness details this test exists to encode: the spy must be a
+    coroutine function (the worker invokes the loop via ``asyncio.run(...)``,
+    which rejects an async generator with ``ValueError: a coroutine was
+    expected``), and it must be patched at its SOURCE module — the worker
+    imports it locally inside ``_run_turn`` (agent_server.py:3393), so
+    ``src.server.agent_server.run_query_as_agent_loop`` does not exist as a
+    module attribute to patch.
+    """
+    seen: dict = {}
+
+    from src.providers.anthropic_provider import AnthropicProvider
+    from src.utils.abort_controller import AbortError
+
+    class _AnthropicShaped(AnthropicProvider):
+        """Real Anthropic class (so is_anthropic_wire is True), never called
+        over the network — the spy replaces the whole query loop."""
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(api_key="sk-test", model="claude-opus-5")
+
+    async def _spy(*args, **kwargs):
+        seen.update(kwargs)
+        raise AbortError()  # unwind the turn cleanly, no envelope assertions
+
+    async with _spawned(tmp_path, _AnthropicShaped) as (handle, gen):
+        sess = _session_of(handle)
+        r = await _control(handle, gen, "e1", {"subtype": "set_effort", "effort": "xhigh"})
+        assert r["ok"] is True
+
+        monkeypatch.setattr(
+            "src.query.agent_loop_compat.run_query_as_agent_loop", _spy
+        )
+        await handle.send_to_agent(
+            {"type": "user", "message": {"role": "user", "content": "hi"}}
+        )
+        assert await _wait_for(lambda: "thinking_effort" in seen), f"loop not called: {seen!r}"
+
+    assert seen["thinking_effort"] == "xhigh", (
+        "interactive /effort must arrive as thinking_effort — without it the "
+        "level never becomes output_config.effort"
+    )
+
+
+async def test_launch_effort_flag_seeds_the_session(tmp_path):
+    """``--effort`` must apply interactively, not only on headless ``-p``.
+
+    The flag was plumbed solely into HeadlessOptions, so
+    ``clawcodex --model claude-opus-5 --effort xhigh`` (no ``-p``) parsed it
+    and silently discarded it. It now rides AgentServerConfig into the
+    session's ``/effort`` level.
+    """
+    config = AgentServerConfig(effort="xhigh")
+    async with _spawned(tmp_path, _TextProvider, config) as (handle, gen):
+        sess = _session_of(handle)
+        assert sess._effort == "xhigh"
+        # _TextProvider is not Anthropic-shaped, so the level routes down
+        # the OpenAI-compat branch — the point here is only that the launch
+        # flag SEEDED a level at all. Per-family routing is pinned by
+        # test_effort_routing_matches_the_provider_wire_shape.
+        provider, thinking_effort = sess._turn_effort_routing()
+        assert provider is not sess.provider and thinking_effort is None
+        assert provider._inject({})["extra_body"]["reasoning_effort"] == "xhigh"
+
+        # A later /effort still wins over the launch flag, and auto clears.
+        r = await _control(handle, gen, "e1", {"subtype": "set_effort", "effort": "low"})
+        assert r["effort"] == "low" and sess._effort == "low"
+        r = await _control(handle, gen, "e2", {"subtype": "set_effort", "effort": "auto"})
+        assert r["effort"] == "default" and sess._effort is None
+
+
+@pytest.mark.parametrize("seed", ["minimal", "bogus", "", "  ", 5, True])
+async def test_launch_effort_flag_ignores_off_ladder_values(tmp_path, seed):
+    """An off-ladder ``--effort`` must be dropped, not seeded verbatim.
+
+    Seeding it would resurrect the trap ``_do_set_effort`` rejects: a value
+    outside VALID_THINKING_EFFORT_LEVELS makes resolve_thinking_effort fall
+    back to settings.effort, so ``--effort minimal`` could put ``max`` on
+    the wire while the init frame's badge showed "minimal". Validated at the
+    seed rather than only in argparse because --stdio/--print-connect
+    callers reach AgentServerConfig without passing a parser — which is also
+    why non-str values are covered: a ``.strip()`` on an int would raise
+    inside _build_runtime, and that turns into init_error, failing the whole
+    session over a cosmetic setting.
+    """
+    async with _spawned(tmp_path, _TextProvider, AgentServerConfig(effort=seed)) as (
+        handle,
+        gen,
+    ):
+        assert _session_of(handle)._effort is None
+
+
+async def test_launch_effort_flag_is_normalized(tmp_path):
+    """Case is normalized at the seed, matching /effort's ``.lower()``.
+
+    ``_EffortProvider`` injects the level verbatim into the request body, so
+    an unnormalized "MAX" would go out on the OpenAI-compat wire as-is.
+    """
+    async with _spawned(tmp_path, _TextProvider, AgentServerConfig(effort=" MAX ")) as (
+        handle,
+        gen,
+    ):
+        assert _session_of(handle)._effort == "max"
+
+
+async def test_set_effort_rejects_minimal_on_the_claude_ladder(tmp_path):
+    """``minimal`` is a GPT-5 level, and accepting it here was a trap.
+
+    It is absent from VALID_THINKING_EFFORT_LEVELS, so on the Anthropic path
+    ``resolve_thinking_effort`` would treat it as "nothing requested" and
+    silently substitute ``settings.effort`` — ``/effort minimal`` could emit
+    ``max`` while the TUI echoed "minimal".
+    """
+    async with _spawned(tmp_path, _TextProvider) as (handle, gen):
+        sess = _session_of(handle)
+        r = await _control(handle, gen, "m1", {"subtype": "set_effort", "effort": "minimal"})
+        assert r["ok"] is False
+        assert "minimal" not in r["error"].split("(")[-1], r["error"]
+        assert sess._effort is None
+
+
 async def test_set_effort_ultracode_gated_when_workflows_disabled(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDE_CODE_DISABLE_WORKFLOWS", "1")
     async with _spawned(tmp_path, _TextProvider) as (handle, gen):

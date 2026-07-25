@@ -227,6 +227,9 @@ def main():
     return launch_ink_tui(
         provider=args.provider,
         model=args.model,
+        # --effort applies interactively too: forwarded to the agent-server
+        # child, which seeds the session's /effort level from it.
+        effort=args.effort,
         permission_mode=args._resolved_permission_mode,
         is_bypass_available=args._resolved_is_bypass_available,
         workspace=(worktree_session.worktree_path if worktree_session else None),
@@ -474,15 +477,18 @@ Examples:
         default=None,
         help='Override the provider (anthropic, openai, zai, minimax, openrouter, deepseek, meta)',
     )
-    # Mirrors TS ``--effort <level>`` (main.tsx:995). TS registers it
-    # session-wide; the interactive TUI equivalent here is the persisted
-    # ``/effort`` setting, so the flag is exposed on the print path where
-    # no dialog exists. None = auto (settings.effort, else the parameter is
-    # omitted and the API applies its model default). xhigh acceptance is
-    # model-dependent — resolve_thinking_effort clamps it to high on models
-    # that reject it. KNOWN LIMIT: the flag governs the MAIN loop only;
-    # subagents (Agent tool) resolve from settings.effort — persist
-    # ``/effort`` (or seed settings) for session-wide coverage.
+    # Mirrors TS ``--effort <level>`` (main.tsx:995), and like TS it is
+    # session-wide: the print path reads it via HeadlessOptions, and the
+    # interactive path forwards it to the agent-server child, which seeds
+    # the session's ``/effort`` level from it (a later ``/effort`` in the
+    # TUI overrides; ``/effort auto`` clears back to settings.effort).
+    # Registered under the noninteractive group for backwards-compatible
+    # ``--help`` grouping only. None = auto (settings.effort, else the
+    # parameter is omitted and the API applies its model default). xhigh
+    # acceptance is model-dependent — resolve_thinking_effort clamps it to
+    # high on models that reject it. KNOWN LIMIT: the flag governs the MAIN
+    # loop only; subagents (Agent tool) resolve from settings.effort —
+    # persist ``/effort`` (or seed settings) for session-wide coverage.
     noninteractive.add_argument(
         '--effort',
         choices=('low', 'medium', 'high', 'xhigh', 'max'),
