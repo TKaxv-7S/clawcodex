@@ -911,12 +911,20 @@ _DOING_TASKS_SECTION = (
     "investigation only when results rule them out or reveal new evidence; "
     "do not replace focused diagnosis with an exhaustive search of the "
     "environment.\n"
+    # The trailing sentence here used to be: "When the user asks for all,
+    # every, multiple, or an exhaustive set of results, actively search for
+    # additional valid results instead of stopping after the first one."
+    # It keyed off bare quantifiers, the same over-broad signal as the
+    # (now removed) exhaustive-audit nudge, and pushed extra verification
+    # rounds on any request that merely contained "each" or "all". What
+    # remains is the part that holds regardless of phrasing: check the
+    # requirements you were actually given. If a request genuinely asks for
+    # every qualifying result, that IS an explicit requirement and the
+    # first sentence already covers it.
     "- Before finishing, audit the result against every explicit requirement "
     "in the user's request and verify the requirements that can be checked. "
     "Do not treat producing a plausible result as proof that the task is "
-    "complete. When the user asks for all, every, multiple, or an exhaustive "
-    "set of results, actively search for additional valid results instead of "
-    "stopping after the first one.\n"
+    "complete.\n"
     "- Use the narrowest sufficient verification for the change. Prefer an "
     "existing focused check, add a regression test when it provides lasting "
     "value, and run broader checks when the scope or risk warrants them. "
