@@ -456,15 +456,9 @@ class Clawcodex(BaseInstalledAgent):
         — the global-config path deliberately does not follow
         CLAWCODEX_CONFIG_DIR) makes the requested effort session-wide.
 
-        This seeds NOTHING but effort. An earlier version also appended
-        Harbor's wall-clock deadline to the system prompt ("stop broad
-        exploration, switch to the narrowest checks"). That is harness-shaped
-        guidance no other agent receives: the built-in claude-code adapter
-        appends nothing, so it made clawcodex-vs-Claude-Code trajectories
-        non-comparable, and it would not exist on a submitted run scored by
-        the official tooling. Any behavior worth having under a deadline
-        belongs in the product's own prompt, applied to every task, not
-        injected by an eval adapter.
+        Effort is the ONLY thing seeded here: guidance an eval adapter gives
+        one agent and not another does not belong in a comparison, and would
+        not exist on a run scored by the official tooling.
         """
         settings: dict[str, Any] = {}
         effort = self._resolved_flags.get("effort")
