@@ -1009,9 +1009,22 @@ _USING_TOOLS_SECTION = (
     "operations that require shell execution. If you are unsure and there "
     "is a relevant dedicated tool, default to using the dedicated tool.\n"
     "- Break down and manage your work with the TaskCreate tool.\n"
+    # Two clauses were dropped in the port, and together they are what turns
+    # a permission into a practice: the imperative to maximize, and the
+    # dependency carve-out that tells the model when NOT to — without which
+    # "in parallel" is risky advice a careful model will mostly decline.
+    # Measured effect of the truncation: clawcodex emits more than one tool
+    # call per assistant turn in 5.7% of steps against the latest Claude
+    # Code's 18.1% on the same tasks — and every un-batched pair is an extra
+    # step, which is most of what the two harnesses' step counts differ by.
     "- You can call multiple tools in a single response. If you intend to "
     "call multiple tools and there are no dependencies between them, "
-    "make all independent tool calls in parallel."
+    "make all independent tool calls in parallel. Maximize use of parallel "
+    "tool calls where possible to increase efficiency. However, if some "
+    "tool calls depend on previous calls to inform dependent values, do "
+    "NOT call these tools in parallel and instead call them sequentially. "
+    "For instance, if one operation must complete before another starts, "
+    "run these operations sequentially instead."
 )
 
 # Module 6: Tone and style
