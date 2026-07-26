@@ -904,32 +904,6 @@ _DOING_TASKS_SECTION = (
     "after a single failure either. Escalate to the user only when you're "
     "genuinely stuck after investigation, not as a first response to "
     "friction.\n"
-    # Measured on seven shared terminal-bench 2.1 tasks, same model and
-    # effort, classifying every step by purpose (2026-07-26, two clawcodex
-    # runs vs the latest Claude Code, per trial):
-    #
-    #                    clawcodex        Claude Code
-    #   explore:inspect  1.71 / 1.57      2.43   <- CC inspects MORE
-    #   author:inline    2.71 / 2.29      1.14
-    #   run:exec         2.29 / 3.57      1.14   <- biggest gap
-    #
-    # Claude Code buys ~0.7 extra inspection steps and saves 1.2-2.4
-    # execution steps: it looks at the data, then writes something that works.
-    # clawcodex writes from assumptions, runs, and pays for it in fix cycles.
-    # This is also why the reverse guidance failed: a bullet telling the model
-    # to act as soon as it had enough information (withdrawn 2026-07-26) made
-    # both step count and reward worse, because under-inspection was the
-    # deficit, not over-deliberation.
-    #
-    # Deliberately narrow: the assumptions the NEXT action depends on, not a
-    # survey of the environment. The exhaustive-audit machinery removed in
-    # #749 is what over-broad exploration guidance costs.
-    "- Before running something you just wrote, confirm the specific "
-    "assumptions it depends on — the shape of the input, which tools "
-    "actually exist, the exact output expected. One cheap check on the real "
-    "data usually costs less than a failed run plus the fix cycle that "
-    "follows it. This is about the assumptions your next action rests on, "
-    "not a survey of the environment.\n"
     "- For ambiguous bugs, failures, or unfamiliar data, form a small set "
     "of plausible hypotheses from the available evidence and rank them by "
     "likelihood and the cost of checking them. Start with the cheapest "
