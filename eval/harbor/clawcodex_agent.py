@@ -444,6 +444,33 @@ class Clawcodex(BaseInstalledAgent):
             env={"CLAWCODEX_OAUTH_JSON": json.dumps(credentials)},
         )
 
+    def _host_env_keys(self) -> dict[str, str]:
+        """The host global config's ``env`` block (stored API keys).
+
+        clawcodex resolves keys like ``TAVILY_API_KEY`` via ``get_secret()``,
+        which reads this block; a container without it cannot run WebSearch.
+        Values travel to the container through the exec ENV, never the command
+        string, so they stay out of process listings and Harbor's logs.
+        """
+        if str(self._resolved_flags.get("forward_keys", "true")).lower() in (
+            "false",
+            "0",
+            "no",
+        ):
+            return {}
+        path = Path.home() / ".clawcodex" / "config.json"
+        try:
+            block = json.loads(path.read_text(encoding="utf-8")).get("env")
+        except (OSError, ValueError):
+            return {}
+        if not isinstance(block, dict):
+            return {}
+        return {
+            str(k): str(v)
+            for k, v in block.items()
+            if isinstance(v, (str, int, float)) and str(v).strip()
+        }
+
     async def _seed_container_settings(
         self,
         environment: BaseEnvironment,
@@ -456,17 +483,32 @@ class Clawcodex(BaseInstalledAgent):
         — the global-config path deliberately does not follow
         CLAWCODEX_CONFIG_DIR) makes the requested effort session-wide.
 
-        Effort is the ONLY thing seeded here: guidance an eval adapter gives
-        one agent and not another does not belong in a comparison, and would
-        not exist on a run scored by the official tooling.
+        Also forwards the host's stored API keys (the global config's ``env``
+        block) so tools that need one work inside the container -- WebSearch
+        resolves ``TAVILY_API_KEY`` through ``get_secret()``, which reads that
+        block, and without it every WebSearch call fails with "Web search is
+        not configured". Opt out with ``--ak forward_keys=false``.
+
+        Behavioural guidance is still NOT seeded here: instructions an eval
+        adapter gives one agent and not another do not belong in a comparison
+        and would not exist on a run scored by the official tooling. Credentials
+        are a capability, not guidance -- the built-in claude-code agent
+        likewise runs with its own key material available.
         """
         settings: dict[str, Any] = {}
         effort = self._resolved_flags.get("effort")
         if effort:
             settings["effort"] = effort
-        if not settings:
+
+        config: dict[str, Any] = {}
+        if settings:
+            config["settings"] = settings
+        env_block = self._host_env_keys()
+        if env_block:
+            config["env"] = env_block
+        if not config:
             return
-        payload = json.dumps({"settings": settings})
+        payload = json.dumps(config)
         await self.exec_as_agent(
             environment,
             command=(
