@@ -377,3 +377,27 @@ class TestBuildFullSystemPrompt:
         assert "echo-arg" in prompt  # skills
         assert "Non-Interactive" in prompt
         assert "Final note" in prompt
+
+
+class TestTaskToolGating:
+    def setup_method(self):
+        get_system_prompt_cache().invalidate_all()
+
+    def test_task_tool_carries_the_reference_skip_conditions(self):
+        """The port dropped them, leaving an unconditional imperative.
+
+        Reference: "Skip using this tool when: There is only a single,
+        straightforward task; the task is trivial and tracking it provides no
+        organizational benefit."  clawcodex kept only "Break down and manage
+        your work with the TaskCreate tool."
+
+        Measured over 14 clawcodex and 21 Claude Code trials on seven shared
+        terminal-bench 2.1 tasks (2026-07-26): task-tool steps per trial were
+        0.21 for clawcodex and 0.00 for Claude Code — it never reaches for it
+        on work this size. With memory writes (0.43 vs 0.00) that is 27% of
+        the remaining step gap spent on bookkeeping.
+        """
+        prompt = build_full_system_prompt(use_cache=False)
+        assert "Break down and manage multi-step work" in prompt
+        assert "Skip it when" in prompt, "the skip condition is the whole fix"
+        assert "trivial enough" in prompt

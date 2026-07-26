@@ -1066,7 +1066,17 @@ _USING_TOOLS_SECTION = (
     "  - Reserve Bash for system commands and terminal operations that "
     "require shell execution. If you are unsure and there is a relevant "
     "dedicated tool, default to using the dedicated tool.\n"
-    "- Break down and manage your work with the TaskCreate tool.\n"
+    # The port dropped the reference's skip conditions, leaving an
+    # unconditional imperative. Measured over 14 clawcodex and 21 Claude Code
+    # trials on seven shared terminal-bench 2.1 tasks (2026-07-26), steps per
+    # trial spent on task-tool bookkeeping: clawcodex 0.21, Claude Code 0.00 —
+    # the reference never reaches for it on work this size. Together with
+    # memory writes (0.43 vs 0.00) that is 27% of the remaining step gap,
+    # spent on bookkeeping rather than the task.
+    "- Break down and manage multi-step work with the TaskCreate tool. Skip "
+    "it when the work is a single straightforward task, or is trivial enough "
+    "that tracking it adds nothing — a task list you are the only reader of "
+    "is overhead, not progress.\n"
     # Two clauses were dropped in the port, and together they are what turns
     # a permission into a practice: the imperative to maximize, and the
     # dependency carve-out that tells the model when NOT to — without which
