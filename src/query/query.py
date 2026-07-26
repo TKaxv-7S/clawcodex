@@ -31,6 +31,7 @@ from ..providers.base import BaseProvider, ChatResponse
 
 from .config import QueryConfig, build_query_config
 from .continuation_nudge import (
+    EMPTY_TURN_NUDGE,
     MAX_CONTINUATION_NUDGES,
     NUDGE_MESSAGE,
     detect_continuation_signal,
@@ -2211,6 +2212,56 @@ async def query(
                         continuation_nudge_count=state.continuation_nudge_count,
                         exhaustive_audit_performed=True,
                         transition=Transition(reason="continuation_nudge"),
+                    )
+                    continue
+                # An assistant turn with NO tool calls and NO text is not a
+                # completion — it is a degenerate response, and accepting it
+                # ends the run with an empty answer while every caller
+                # (including eval harnesses) records a clean success. The
+                # nudge below can't catch it: it gates on ``last_text``
+                # being truthy, so an empty turn falls straight through to
+                # ``Terminal(reason="completed")``.
+                #
+                # Measured on terminal-bench 2.1 (2026-07-25): 3 of 89
+                # trials — break-filter-js-from-html, crack-7z-hash,
+                # vulnerable-secret — ended after ONE turn and ONE output
+                # token in ~3 seconds, each reported ``subtype: success``
+                # with an empty result and scored 0. Claude Code solved all
+                # three. Re-prompting costs one round trip and is bounded by
+                # the same MAX_CONTINUATION_NUDGES cap as every other nudge.
+                # ...unless the model spoke through the user-visible outbox
+                # instead. SendUserMessage advertises itself as the primary
+                # visible output channel, so a model that obeys it
+                # legitimately ends with empty assistant text;
+                # agent_loop_compat already treats the outbox as the
+                # response text in that case. Nudging there would re-prompt
+                # a turn that actually delivered.
+                spoke_via_outbox = bool(
+                    getattr(tool_use_context, "outbox", None)
+                )
+                if not last_text.strip() and not spoke_via_outbox:
+                    logger.warning(
+                        "empty assistant turn (no text, no tool calls) — "
+                        "re-prompting (%d/%d)",
+                        state.continuation_nudge_count + 1,
+                        MAX_CONTINUATION_NUDGES,
+                    )
+                    state = QueryState(
+                        messages=[
+                            *messages,
+                            *assistant_messages,
+                            UserMessage(content=EMPTY_TURN_NUDGE, isMeta=True),
+                        ],
+                        tool_use_context=tool_use_context,
+                        auto_compact_tracking=state.auto_compact_tracking,
+                        max_output_tokens_recovery_count=0,
+                        has_attempted_reactive_compact=False,
+                        max_output_tokens_override=None,
+                        stop_hook_active=None,
+                        turn_count=turn_count,
+                        pending_tool_use_summary=None,
+                        continuation_nudge_count=state.continuation_nudge_count + 1,
+                        transition=Transition(reason="empty_turn_nudge"),
                     )
                     continue
                 if last_text and detect_continuation_signal(last_text):

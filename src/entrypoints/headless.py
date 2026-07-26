@@ -173,6 +173,18 @@ def run_headless(options: HeadlessOptions) -> int:
     session = Session.create(provider_name, getattr(provider, "model", model or ""))
 
     tool_registry = build_default_registry(provider=provider)
+    # AskUserQuestion cannot work here: headless has no terminal, and no
+    # surface routes questions back to a client (``ask_user`` below is
+    # unconditionally stubbed). Leaving it REGISTERED but stubbed meant the
+    # model could still find it — via ToolSearch even when deferred loading
+    # keeps it out of the initial set — spend turns on it, and then hand the
+    # task back to a user who does not exist. Observed live on terminal-bench
+    # 2.1 (fix-git, 2026-07-25): two AskUserQuestion calls, then a final
+    # "let me explain what I found" instead of finishing; the verifier found
+    # the files untouched. Unregistering matches what Claude Code exposes
+    # headlessly. ``_noop_ask_user`` stays as a backstop for any path that
+    # still reaches the context hook.
+    tool_registry.remove_tool("AskUserQuestion")
     # Canonicalize BOTH sets up front (before either filter runs) so an alias
     # form (e.g. --disallowed-tools KillShell) resolves while its tool is still
     # registered.

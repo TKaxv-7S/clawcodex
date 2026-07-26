@@ -59,6 +59,20 @@ Agent kwargs (``--ak key=value``):
   ``ANTHROPIC_API_KEY`` is deliberately not forwarded so clawcodex takes
   the OAuth path (and combining with ``--ae ANTHROPIC_API_KEY`` is
   rejected).
+
+  **Prefer an API key for any scored or submitted run.** The injected copy
+  deliberately carries no refresh token, so it cannot self-heal: when the
+  credential is rotated — by this adapter refreshing for a later trial, or
+  by ANY other process sharing ``anthropic-oauth.json`` (an interactive
+  clawcodex session, another job) — the provider revokes the token already
+  live inside running containers, and those trials die mid-run with
+  ``401 … OAuth access token has been revoked``. It is indistinguishable
+  from an agent crash in the results: Harbor records
+  ``NonZeroAgentExitCodeError`` and scores 0. Measured on the tb2.1
+  2026-07-25 run: 2 of 89 trials lost this way (one only 4.7 minutes in,
+  so runway was not the issue — rotation was), against 0 such failures for
+  the claude-code adapter in the comparable run. An API key has no
+  rotation and no expiry, so a scored run should not be exposed to it.
 """
 
 import json

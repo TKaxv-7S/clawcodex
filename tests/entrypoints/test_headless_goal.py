@@ -42,6 +42,11 @@ class _FakeRegistry:
     def list_tools(self):
         return []
 
+    def remove_tool(self, name):
+        # run_headless unregisters AskUserQuestion (no user on
+        # this surface); real ToolRegistry returns a bool.
+        return False
+
 
 class _Wiring:
     """Fixture handle: ``script`` feeds providers created after it's filled;
