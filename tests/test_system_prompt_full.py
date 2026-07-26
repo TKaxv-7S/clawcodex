@@ -87,6 +87,42 @@ class TestBuildFullSystemPrompt:
         assert "long sequence of tiny edits" in prompt
         assert "Keep unrelated or semantically distinct changes separate" in prompt
 
+    def test_task_prompt_keeps_the_reference_file_creation_qualifiers(self):
+        """The file-creation bullet must carry BOTH reference qualifiers.
+
+        Reference (typescript/src/constants/prompts.ts, "Doing tasks"):
+        "Do not create files unless they're absolutely necessary for
+        achieving your goal. Generally prefer editing an existing file to
+        creating a new one, as this prevents file bloat and builds on
+        existing work more effectively."
+
+        The port dropped "for achieving your goal" and the rationale,
+        leaving what reads as a flat ban on new files. That cost a
+        terminal-bench 2.1 task outright (torch-tensor-parallelism,
+        2026-07-25): the instruction was "Create the file
+        /app/parallel_linear.py", /app was empty, no interpreter existed to
+        verify against, and the agent spent every step hunting for one
+        instead of writing the deliverable it had been asked for.
+        """
+        prompt = build_full_system_prompt(use_cache=False)
+        assert "absolutely necessary for achieving your goal" in prompt, (
+            "dropping 'for achieving your goal' turns a bloat-avoidance rule "
+            "into a prohibition on producing a requested file"
+        )
+        assert "prevents file bloat" in prompt
+
+    def test_task_prompt_scopes_escalation_to_genuine_blockage(self):
+        """Restored from the reference's "If an approach fails" bullet.
+
+        The named tool is omitted on purpose: AskUserQuestion is
+        unregistered on the headless surface, and a prompt that names an
+        unavailable tool is its own failure mode (fix-git, 2026-07-25 —
+        asked twice, then handed the task back to a user who did not exist).
+        """
+        prompt = build_full_system_prompt(use_cache=False)
+        assert "genuinely stuck after investigation" in prompt
+        assert "not as a first response to friction" in prompt
+
     def test_identity_prompt_backward_compat(self):
         """_IDENTITY_PROMPT is an alias for _INTRO_SECTION."""
         assert _IDENTITY_PROMPT is _INTRO_SECTION
