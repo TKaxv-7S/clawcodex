@@ -137,6 +137,30 @@ class TestBuildFullSystemPrompt:
         assert "genuinely stuck after investigation" in prompt
         assert "not as a first response to friction" in prompt
 
+    def test_tools_prompt_pushes_parallel_tool_calls(self):
+        """Bare permission to batch is not enough — the port dropped the push.
+
+        Reference wording carries three parts: you may call multiple tools,
+        MAXIMIZE parallel calls for efficiency, and do NOT parallelize
+        dependent calls. clawcodex kept only the first, which reads as
+        permission without direction — and the dependency carve-out is what
+        makes acting on it safe.
+
+        Measured cost: clawcodex emitted >1 tool call per assistant turn in
+        5.7% of steps against the latest Claude Code's 18.1% on the same
+        terminal-bench 2.1 tasks (2026-07-26). Each un-batched independent
+        pair is an extra step, which is most of the two harnesses' step-count
+        difference.
+        """
+        prompt = build_full_system_prompt(use_cache=False)
+        assert "make all independent tool calls in parallel" in prompt
+        assert "Maximize use of parallel tool calls" in prompt, (
+            "without the imperative, batching stays theoretical"
+        )
+        assert "do NOT call these tools in parallel" in prompt, (
+            "the dependency carve-out is what makes parallelizing safe to act on"
+        )
+
     def test_identity_prompt_backward_compat(self):
         """_IDENTITY_PROMPT is an alias for _INTRO_SECTION."""
         assert _IDENTITY_PROMPT is _INTRO_SECTION
