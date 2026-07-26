@@ -2171,49 +2171,6 @@ async def query(
                         for b in content
                         if getattr(b, "type", None) == "text"
                     )
-                # A completion claim is not sufficient when the user asked
-                # for an exhaustive result set. Require one bounded audit
-                # pass before accepting the clean exit. This closes a common
-                # harness failure mode where the model finds one plausible
-                # answer and stops despite an explicit "all"/"multiple"
-                # requirement. A dedicated latch survives tool rounds so the
-                # guard cannot create an unbounded self-review loop.
-                from .continuation_nudge import (
-                    EXHAUSTIVE_AUDIT_NUDGE,
-                    requests_exhaustive_results,
-                )
-
-                exhaustive_request = any(
-                    not getattr(msg, "isMeta", False)
-                    and getattr(msg, "role", None) == "user"
-                    and requests_exhaustive_results(
-                        getattr(msg, "content", "")
-                        if isinstance(getattr(msg, "content", ""), str)
-                        else ""
-                    )
-                    for msg in messages
-                )
-                if exhaustive_request and not state.exhaustive_audit_performed:
-                    logger.debug("Exhaustive-result audit nudge triggered")
-                    state = QueryState(
-                        messages=[
-                            *messages,
-                            *assistant_messages,
-                            UserMessage(content=EXHAUSTIVE_AUDIT_NUDGE, isMeta=True),
-                        ],
-                        tool_use_context=tool_use_context,
-                        auto_compact_tracking=state.auto_compact_tracking,
-                        max_output_tokens_recovery_count=0,
-                        has_attempted_reactive_compact=False,
-                        max_output_tokens_override=None,
-                        stop_hook_active=None,
-                        turn_count=turn_count,
-                        pending_tool_use_summary=None,
-                        continuation_nudge_count=state.continuation_nudge_count,
-                        exhaustive_audit_performed=True,
-                        transition=Transition(reason="continuation_nudge"),
-                    )
-                    continue
                 # An assistant turn with NO tool calls and NO text is not a
                 # completion — it is a degenerate response, and accepting it
                 # ends the run with an empty answer while every caller
@@ -2512,7 +2469,6 @@ async def query(
             stop_hook_active=state.stop_hook_active,
             # Phase A: reset per-turn counter; carry pending summary forward.
             continuation_nudge_count=0,
-            exhaustive_audit_performed=state.exhaustive_audit_performed,
             pending_tool_use_summary=state.pending_tool_use_summary,
             transition=Transition(reason="next_turn"),
         )

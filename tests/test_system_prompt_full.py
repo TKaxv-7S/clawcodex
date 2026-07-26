@@ -59,11 +59,25 @@ class TestBuildFullSystemPrompt:
         assert "interactive agent" in prompt
         assert "software engineering tasks" in prompt
 
-    def test_task_prompt_requires_requirement_audit_and_exhaustive_results(self):
+    def test_task_prompt_audits_requirements_without_a_quantifier_trigger(self):
+        """Keep the requirement audit; drop the quantifier-keyed clause.
+
+        The removed sentence told the model to search for additional
+        results "when the user asks for all, every, multiple…" — keying off
+        bare quantifiers, which appear in ordinary task descriptions
+        ("each line of the file", "in all years"). Paired with the
+        exhaustive-audit nudge it drove verification rounds the latest
+        Claude Code does not spend: 1 of its 89 terminal-bench 2.1 trials
+        writes more than two verification files.
+
+        A genuine "give me every match" request is an explicit requirement,
+        so the surviving sentence already covers it.
+        """
         prompt = build_full_system_prompt(use_cache=False)
         assert "audit the result against every explicit requirement" in prompt
-        assert "all, every, multiple, or an exhaustive set" in prompt
-        assert "stopping after the first one" in prompt
+        assert "plausible result as proof" in prompt
+        assert "all, every, multiple, or an exhaustive set" not in prompt
+        assert "stopping after the first one" not in prompt
 
     def test_task_prompt_prioritizes_evidence_and_cheap_discriminating_checks(self):
         prompt = build_full_system_prompt(use_cache=False)

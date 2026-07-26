@@ -30,10 +30,8 @@ def get_pending_post_compaction() -> bool:
     return _bs._STATE.pending_post_compaction
 from src.providers.base import ChatResponse
 from src.query.continuation_nudge import (
-    EXHAUSTIVE_AUDIT_NUDGE,
     MAX_CONTINUATION_NUDGES,
     detect_continuation_signal,
-    requests_exhaustive_results,
 )
 from src.query.query import QueryParams, run_query
 from src.query.stop_hooks import StopHookResult
@@ -623,10 +621,30 @@ class TestContinuationNudge(_Base):
             sum(1 for m in msgs if isinstance(m, AssistantMessage)), 1
         )
 
-    def test_exhaustive_request_forces_one_audit_pass(self):
+    def test_no_forced_audit_pass_on_a_completion_claim(self):
+        """A completion claim ends the turn — no extra audit round-trip.
+
+        #740 added a one-shot "exhaustive audit" nudge: when the request
+        matched a bare quantifier (all|every|multiple|each|...), the loop
+        appended a MUST-enumerate instruction and forced another model
+        turn. Removed, on evidence from the latest Claude Code rather than
+        from the older vendored fork:
+
+        * CC scores 1.0 on the two tasks the mechanism was built for
+          (chess-best-move, regex-chess) with no such machinery;
+        * only 1 of its 89 trials writes more than two verification files,
+          against clawcodex's 57 temporary verification scripts overall;
+        * the trigger was a plain-English quantifier match, so it fired on
+          49% of terminal-bench 2.1 — "each line of the file", "where each
+          task is", "in all years" — and in regex-log it demanded
+          exhaustive enumeration of a task that asks to match only ONE.
+
+        Verification guidance now lives entirely in the system prompt,
+        which is where the model can weigh it against the request.
+        """
         provider = _provider([
             _completion("I found one result and finished."),
-            _completion("I audited all candidates and updated the result."),
+            _completion("second turn should never happen"),
         ])
         params = _params(self.workspace, provider)
         params.messages = [
@@ -637,15 +655,9 @@ class TestContinuationNudge(_Base):
 
         self.assertEqual(terminal.reason, "completed")
         self.assertEqual(
-            sum(1 for m in msgs if isinstance(m, AssistantMessage)), 2
+            sum(1 for m in msgs if isinstance(m, AssistantMessage)), 1,
+            "an exhaustive-sounding request must not buy an extra turn",
         )
-
-    def test_exhaustive_request_detector(self):
-        self.assertTrue(requests_exhaustive_results("print them all"))
-        self.assertTrue(requests_exhaustive_results("multiple winning moves"))
-        self.assertFalse(requests_exhaustive_results("find the best move"))
-        self.assertIn("MUST use a tool", EXHAUSTIVE_AUDIT_NUDGE)
-        self.assertIn("state after each candidate action", EXHAUSTIVE_AUDIT_NUDGE)
 
 
 # ---------------------------------------------------------------------------
