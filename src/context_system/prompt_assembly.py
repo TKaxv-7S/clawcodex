@@ -877,12 +877,33 @@ _DOING_TASKS_SECTION = (
     "- In general, do not propose changes to code you haven't read. "
     "If a user asks about or wants you to modify a file, read it first. "
     "Understand existing code before suggesting modifications.\n"
-    "- Do not create files unless they're absolutely necessary. "
-    "Generally prefer editing an existing file to creating a new one.\n"
+    # Both qualifiers below are load-bearing and were dropped in the port
+    # (reference: typescript/src/constants/prompts.ts "Doing tasks"). Without
+    # "for achieving your goal" the bullet reads as a flat prohibition on
+    # creating files, and without the rationale it loses the scope that makes
+    # it a bloat-avoidance rule rather than a ban. Cost of the truncation,
+    # observed on terminal-bench 2.1 (torch-tensor-parallelism, 2026-07-25):
+    # the task said "Create the file /app/parallel_linear.py", /app was empty,
+    # the container had no Python to verify against — and the agent spent all
+    # 8 of its steps hunting for an interpreter and never wrote the file.
+    # Claude Code wrote it on its 5th action and scored 1.0.
+    "- Do not create files unless they're absolutely necessary for achieving "
+    "your goal. Generally prefer editing an existing file to creating a new "
+    "one, as this prevents file bloat and builds on existing work more "
+    "effectively.\n"
+    # Final clause restored from the reference, which ends this bullet with
+    # "Escalate to the user with <AskUserQuestion> only when you're genuinely
+    # stuck after investigation, not as a first response to friction."
+    # Deliberately phrased without naming the tool: it is unregistered on the
+    # headless surface (nothing there can answer), and a prompt that names an
+    # unavailable tool is its own failure mode \u2014 fix-git, 2026-07-25, asked
+    # twice and then handed the task back to a user who did not exist.
     "- If an approach fails, diagnose why before switching tactics\u2014read "
     "the error, check your assumptions, try a focused fix. Don't retry "
     "the identical action blindly, but don't abandon a viable approach "
-    "after a single failure either.\n"
+    "after a single failure either. Escalate to the user only when you're "
+    "genuinely stuck after investigation, not as a first response to "
+    "friction.\n"
     "- For ambiguous bugs, failures, or unfamiliar data, form a small set "
     "of plausible hypotheses from the available evidence and rank them by "
     "likelihood and the cost of checking them. Start with the cheapest "
