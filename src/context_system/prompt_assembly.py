@@ -1002,12 +1002,44 @@ _USING_TOOLS_SECTION = (
     "understand and review your work. This is CRITICAL.\n"
     "  - To read files use Read instead of cat, head, tail, or sed\n"
     "  - To edit files use Edit instead of sed or awk\n"
-    "  - To create files use Write instead of cat with heredoc or echo\n"
+    # The scope clause is the port's own rationale ("allows the user to
+    # better understand and review your work") applied consistently: it is
+    # about files the user reviews. Unscoped, the rule also caught scratch
+    # scripts, which cost a step every time — clawcodex authors a probe
+    # script with Write and then spends a second step running it, where the
+    # current Claude Code does both in one Bash call. Measured on seven
+    # shared terminal-bench 2.1 tasks at the same model and effort
+    # (2026-07-26): Claude Code authors 23.4% of its Bash calls via heredoc
+    # against clawcodex's 2.7%, and spends 13.6% of its tool calls on
+    # Write/Edit against clawcodex's 25.5%. The reference's own wording is a
+    # single soft line ("Prefer the dedicated file/search tools over shell
+    # commands when one fits"), so the absolute reading is not faithful either.
+    # Location is deliberately unspecified: it makes no permission difference.
+    # check_accept_edits_bash (src/permissions/bash_mode_validation.py:304)
+    # gates on _has_shell_redirection, not on where the redirect points --
+    # `cat` is in ACCEPT_EDITS_READ_ONLY_COMMANDS and that branch requires
+    # `not redirection_anywhere` -- so every authoring form returns False and
+    # prompts, in-roots and /tmp alike (verified for `cat > /app/x <<PY`,
+    # `cat > /tmp/x <<PY`, `cat > ./x <<PY`, `printf 'x' > /app/x`).
+    #
+    # KNOWN COST, accepted deliberately: in acceptEdits mode Write is
+    # auto-accepted while a Bash heredoc prompts, so taking this option trades
+    # a saved step for an approval prompt there. It is a clear win only where
+    # Bash is already unprompted (headless, bypass). Hence "may" rather than
+    # an instruction -- the model still has Write available and should use it
+    # when a prompt would cost more than the step saves.
+    "  - To create files use Write instead of cat with heredoc or echo. A "
+    "throwaway script you run once and discard is part of the command "
+    "rather than a deliverable, and may instead be authored inline in the "
+    "same Bash call that runs it.\n"
     "  - To search for files use Glob instead of find or ls\n"
     "  - To search the content of files, use Grep instead of grep or rg\n"
-    "  - Reserve using the Bash exclusively for system commands and terminal "
-    "operations that require shell execution. If you are unsure and there "
-    "is a relevant dedicated tool, default to using the dedicated tool.\n"
+    # "exclusively" was dropped: it cannot coexist with the throwaway-script
+    # carve-out above, and a prompt that states a rule and its exception in
+    # absolute terms leaves the model to guess which one governs.
+    "  - Reserve Bash for system commands and terminal operations that "
+    "require shell execution. If you are unsure and there is a relevant "
+    "dedicated tool, default to using the dedicated tool.\n"
     "- Break down and manage your work with the TaskCreate tool.\n"
     # Two clauses were dropped in the port, and together they are what turns
     # a permission into a practice: the imperative to maximize, and the

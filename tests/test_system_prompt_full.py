@@ -161,6 +161,38 @@ class TestBuildFullSystemPrompt:
             "the dependency carve-out is what makes parallelizing safe to act on"
         )
 
+    def test_throwaway_scripts_may_be_authored_inline(self):
+        """A one-shot script is part of the command, not a deliverable.
+
+        The Write preference must survive for deliverables — that is what
+        keeps real edits reviewable as diffs — while a throwaway script the
+        agent runs once may be authored inside the Bash call that runs it,
+        saving a step.
+
+        Stated as permission ("may"), not instruction, because the tradeoff
+        is context-dependent: in acceptEdits mode Write is auto-accepted
+        while any Bash redirect prompts (check_accept_edits_bash gates on
+        _has_shell_redirection, so the target path is irrelevant), so the
+        saved step costs an approval there.
+
+        No location is specified — /tmp and in-roots paths prompt
+        identically, so mandating one buys nothing.
+        """
+        prompt = build_full_system_prompt(use_cache=False)
+        assert "To create files use Write instead of cat with heredoc" in prompt, (
+            "the deliverable path must still prefer Write, for reviewable diffs"
+        )
+        assert "throwaway script you run once and discard" in prompt
+        assert "may instead be authored inline" in prompt, (
+            "permission, not instruction — the tradeoff depends on whether "
+            "Bash is already unprompted in the caller's permission mode"
+        )
+        tools_section = prompt.split("# Using your tools")[1].split("\n- Break")[0]
+        assert "/tmp" not in tools_section
+        assert "exclusively" not in tools_section, (
+            "an absolute 'Reserve Bash exclusively' contradicts the carve-out"
+        )
+
     def test_identity_prompt_backward_compat(self):
         """_IDENTITY_PROMPT is an alias for _INTRO_SECTION."""
         assert _IDENTITY_PROMPT is _INTRO_SECTION
