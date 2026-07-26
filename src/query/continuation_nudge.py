@@ -16,6 +16,16 @@ MAX_CONTINUATION_NUDGES = 3
 
 NUDGE_MESSAGE = "Continue with the task. Use the appropriate tools to proceed."
 
+#: Sent when an assistant turn comes back with no tool calls AND no text.
+#: That is never a usable answer — it is a degenerate response that would
+#: otherwise terminate the run as "completed" with nothing done. Kept short
+#: and neutral so it reads as a retry rather than a correction.
+EMPTY_TURN_NUDGE = (
+    "Your last response was empty. Continue working on the task using the "
+    "available tools. If the task is genuinely already complete, say so "
+    "explicitly and state what you did."
+)
+
 EXHAUSTIVE_AUDIT_NUDGE = (
     "Before finishing, audit the result against the user's exhaustive-result "
     "requirement. Actively search for additional valid results; do not assume "

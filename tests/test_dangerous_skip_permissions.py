@@ -246,6 +246,11 @@ def test_headless_run_skip_permissions_sets_bypass_mode(tmp_path, monkeypatch):
         def list_tools(self):
             return []
 
+        def remove_tool(self, name):
+            # run_headless unregisters AskUserQuestion (no user on
+            # this surface); real ToolRegistry returns a bool.
+            return False
+
     monkeypatch.setattr(
         headless_mod, "get_provider_class", lambda n: _FakeProvider
     )
@@ -317,6 +322,11 @@ def test_headless_run_default_mode_keeps_auto_deny_handler(tmp_path, monkeypatch
     class _FakeRegistry:
         def list_tools(self):
             return []
+
+        def remove_tool(self, name):
+            # run_headless unregisters AskUserQuestion (no user on
+            # this surface); real ToolRegistry returns a bool.
+            return False
 
     monkeypatch.setattr(
         headless_mod, "get_provider_class", lambda n: _FakeProvider

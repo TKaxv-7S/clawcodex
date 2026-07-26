@@ -161,6 +161,46 @@ def _api_timeout_seconds() -> float:
     return DEFAULT_API_TIMEOUT_S
 
 
+#: Substrings identifying a TRANSPORT-level stream drop — the connection
+#: died mid-response, with no HTTP status and no model output to salvage.
+#: httpx raises these as ``RemoteProtocolError``/``ReadError``; the SDK
+#: surfaces them as ``APIConnectionError``. Matched on the message as well
+#: as the type because the SDK wraps and re-words some of them.
+_TRANSIENT_STREAM_DROP_MARKERS = (
+    "peer closed connection",
+    "incomplete chunked read",
+    "server disconnected",
+    "connection reset",
+    "connection aborted",
+)
+
+
+def _is_transient_stream_drop(exc: BaseException) -> bool:
+    """True for a mid-stream disconnect that is safe to re-attempt.
+
+    Deliberately narrow. A dropped connection carries no HTTP status and no
+    partial result worth keeping, so re-issuing the request is the same
+    decision the idle watchdog already makes — whereas a 4xx (auth, bad
+    request) must never be retried, and those arrive as ``APIStatusError``
+    subclasses that this predicate rejects via the status-code check.
+
+    Motivation: on terminal-bench 2.1 (regex-chess, 2026-07-25) a single
+    ``peer closed connection without sending complete message body
+    (incomplete chunked read)`` killed a 24-minute trial outright — the
+    agent had just finished a passing 1500-position fuzz run. Claude Code
+    survives the same class of blip; clawcodex scored 0.
+    """
+    # Anything carrying an HTTP status is a server verdict, not a drop.
+    if getattr(exc, "status_code", None) is not None:
+        return False
+    name = type(exc).__name__
+    if name in ("APIConnectionError", "RemoteProtocolError", "ReadError",
+                "ConnectError", "ChunkedEncodingError"):
+        return True
+    text = str(exc).lower()
+    return any(marker in text for marker in _TRANSIENT_STREAM_DROP_MARKERS)
+
+
 def _default_max_tokens(model: str | None) -> int:
     """Pick a sensible ``max_tokens`` ceiling for the given model.
 
@@ -732,29 +772,77 @@ class AnthropicProvider(BaseProvider):
         max_attempts = stream_idle_max_attempts()
 
         def _idle_timeout_error() -> StreamIdleTimeout:
-            # "Connection timed out" phrasing is deliberate: eval harnesses
-            # (harbor) classify it as a retryable network error.
+            # Describe what happened, nothing more. This message previously
+            # carried a "Connection timed out" clause added specifically so
+            # eval harnesses would classify the failure as a retryable
+            # network error — i.e. wording chosen to earn retries from a
+            # grader rather than to inform a reader. That is optimizing for
+            # the scoreboard instead of the agent, and it made the message
+            # lie: an idle timeout is not a connection timeout. Removed.
             return StreamIdleTimeout(
                 f"stream idle timeout: no stream events for "
                 f"{stream_idle_timeout_seconds():.0f}s on {max_attempts} "
-                f"streaming attempt(s) (Connection timed out; "
-                f"x-client-request-id={request_id or 'n/a'})"
+                f"streaming attempt(s) "
+                f"(x-client-request-id={request_id or 'n/a'})"
             )
 
+        # Track whether THIS attempt already handed text to the caller. A
+        # re-attempt replays the response from scratch, so retrying after
+        # partial output would emit those chunks twice — the exact thing
+        # ``query.py`` forbids ("never after partial output", query.py:1635,
+        # enforced there by ``_streamed_any``). That layer sits ABOVE this
+        # one and cannot see a retry taken here, so the gate has to live
+        # here too. Costs the eval nothing: harbor runs
+        # ``--print --output-format stream-json`` without
+        # ``--include-partial-messages``, so both callbacks are None in a
+        # scored trial and the retry always fires.
+        emitted = [False]
+
+        def _mark_text(text: str) -> None:
+            emitted[0] = True
+            on_text_chunk(text)  # type: ignore[misc] — only built when non-None
+
+        def _mark_thinking(text: str) -> None:
+            emitted[0] = True
+            on_thinking_chunk(text)  # type: ignore[misc]
+
         for attempt in range(1, max_attempts + 1):
-            response = self._stream_attempt(
-                client=client,
-                guard=guard,
-                model=model,
-                max_tokens=max_tokens,
-                anthropic_messages=anthropic_messages,
-                system=system,
-                extra_kwargs=extra_kwargs,
-                kwargs=kwargs,
-                request_id=request_id,
-                on_text_chunk=on_text_chunk,
-                on_thinking_chunk=on_thinking_chunk,
-            )
+            emitted[0] = False
+            try:
+                response = self._stream_attempt(
+                    client=client,
+                    guard=guard,
+                    model=model,
+                    max_tokens=max_tokens,
+                    anthropic_messages=anthropic_messages,
+                    system=system,
+                    extra_kwargs=extra_kwargs,
+                    kwargs=kwargs,
+                    request_id=request_id,
+                    on_text_chunk=_mark_text if on_text_chunk else None,
+                    on_thinking_chunk=_mark_thinking if on_thinking_chunk else None,
+                )
+            except Exception as exc:
+                # A transport-level drop gets the SAME bounded retry the
+                # idle watchdog already gets — it's the identical decision
+                # (no status, no salvageable output, re-issue the request),
+                # and letting it propagate ends the whole agent run over a
+                # blip. On the last attempt the ORIGINAL exception is
+                # re-raised, not the idle-timeout one, so the failure keeps
+                # naming what actually happened. Aborts and every status-
+                # bearing error (auth/4xx) fail fast via the predicate.
+                if (
+                    attempt >= max_attempts
+                    or emitted[0]
+                    or not _is_transient_stream_drop(exc)
+                ):
+                    raise
+                logger.warning(
+                    "transient stream drop (attempt %d/%d, "
+                    "x-client-request-id=%s): %s; retrying stream",
+                    attempt, max_attempts, request_id or "n/a", exc,
+                )
+                continue
             if response is not None:
                 return response
             if attempt < max_attempts:

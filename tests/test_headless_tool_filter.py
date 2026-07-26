@@ -142,3 +142,38 @@ def test_canonicalize_skips_blanks_so_allowlist_cannot_wipe_all():
     if allow:
         headless_mod._filter_registry(registry, keep=lambda n: n.lower() in allow)
     assert _names(registry) == before
+
+
+def test_headless_unregisters_ask_user_question_source():
+    """Headless must not merely stub AskUserQuestion — it must unregister it.
+
+    Stubbing only ``tool_context.ask_user`` leaves the tool in the registry,
+    so the model can still reach it (via ToolSearch even when deferred
+    loading keeps it out of the initial set), spend turns on it, and hand
+    the task back to a user who cannot exist on this surface. Observed on
+    terminal-bench 2.1 (fix-git, 2026-07-25): two calls, then a "let me
+    explain what I found" ending with the work undone.
+
+    Asserted against the source because ``run_headless`` needs a live
+    provider/session to reach the line.
+    """
+    import inspect
+
+    src = inspect.getsource(headless_mod.run_headless)
+    assert 'remove_tool("AskUserQuestion")' in src, (
+        "headless must unregister AskUserQuestion, not just stub ask_user"
+    )
+    # And the removal must precede the allow/deny filtering, so an explicit
+    # --allowed-tools list cannot resurrect it.
+    assert src.index('remove_tool("AskUserQuestion")') < src.index(
+        "_filter_registry"
+    ), "unregister AskUserQuestion before the allow/deny filters run"
+
+
+def test_remove_tool_is_idempotent_for_ask_user_question():
+    """The headless unregister must be safe when the tool is already absent
+    (e.g. a provider whose default registry never included it)."""
+    registry = build_default_registry(provider="anthropic")
+    assert registry.remove_tool("AskUserQuestion") is True
+    assert registry.remove_tool("AskUserQuestion") is False
+    assert "AskUserQuestion" not in _names(registry)

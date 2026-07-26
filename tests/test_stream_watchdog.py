@@ -13,6 +13,8 @@ import os
 import threading
 import time
 import unittest
+
+import pytest
 from unittest.mock import MagicMock
 
 from src.utils.stream_watchdog import (
@@ -330,8 +332,16 @@ class TestWatchdogIntegrationWithProvider(unittest.TestCase):
         # Default budget: 3 total attempts, all streamed.
         self.assertEqual(fake_client.messages.stream.call_count, 3)
         mock_chat.assert_not_called()
-        # Harness-classifiable phrasing (harbor: NetworkConnectionError).
-        self.assertIn("Connection timed out", str(ctx.exception))
+        # The message describes the actual failure and nothing else. It
+        # used to append "Connection timed out" purely so an eval harness
+        # would classify the trial as a retryable network error — wording
+        # aimed at a grader, not a reader, and inaccurate besides (an idle
+        # stream is not a connection timeout). Pin the honest phrasing so
+        # it does not creep back.
+        message = str(ctx.exception)
+        self.assertIn("stream idle timeout", message)
+        self.assertIn("no stream events for", message)
+        self.assertNotIn("Connection timed out", message)
 
     def test_retry_budget_env_override(self):
         from src.utils.stream_watchdog import stream_idle_max_attempts
@@ -506,3 +516,182 @@ class TestForceCloseResponse(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTransientStreamDropClassifier(unittest.TestCase):
+    """A mid-stream transport drop is retryable; a server verdict is not.
+
+    Terminal-bench 2.1 (regex-chess, 2026-07-25): one ``peer closed
+    connection without sending complete message body (incomplete chunked
+    read)`` ended a 24-minute trial at reward 0, moments after a passing
+    1500-position fuzz run. The idle watchdog already re-attempts the
+    stream for the equivalent condition; this classifier is what lets the
+    transport case take the same bounded path instead of propagating.
+    """
+
+    def _classify(self, exc):
+        from src.providers.anthropic_provider import _is_transient_stream_drop
+
+        return _is_transient_stream_drop(exc)
+
+    def test_retries_transport_drops(self):
+        class APIConnectionError(Exception):
+            pass
+
+        for exc in (
+            APIConnectionError("peer closed connection without sending "
+                               "complete message body (incomplete chunked read)"),
+            Exception("Server disconnected without sending a response."),
+            Exception("Connection reset by peer"),
+        ):
+            self.assertTrue(self._classify(exc), exc)
+
+    def test_never_retries_status_bearing_errors(self):
+        """Auth and overload carry an HTTP status — retrying an expired or
+        revoked token just burns the remaining budget on guaranteed 401s."""
+        class APIStatusError(Exception):
+            def __init__(self, message, status_code):
+                super().__init__(message)
+                self.status_code = status_code
+
+        for exc in (
+            APIStatusError("OAuth access token has been revoked.", 401),
+            APIStatusError("overloaded_error", 529),
+            APIStatusError("invalid_request_error", 400),
+        ):
+            self.assertFalse(self._classify(exc), exc)
+
+    def test_matches_the_real_sdk_and_httpx_classes(self):
+        """Pin against REAL exception objects, not local stand-ins.
+
+        The local fakes validate name matching but cannot catch SDK
+        hierarchy drift — which is the actual risk, since the predicate is
+        subclass-blind by design. httpx.RemoteProtocolError is the concrete
+        class the regex-chess trial died on: the SDK does not wrap errors
+        raised while ITERATING a stream, so it arrives raw.
+        """
+        httpx = pytest.importorskip("httpx")
+        anthropic = pytest.importorskip("anthropic")
+
+        self.assertTrue(self._classify(httpx.RemoteProtocolError(
+            "peer closed connection without sending complete message body "
+            "(incomplete chunked read)")))
+        req = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+        self.assertTrue(self._classify(httpx.ReadError("boom", request=req)))
+        self.assertTrue(self._classify(
+            anthropic.APIConnectionError(request=req)))
+        # Client-side protocol bugs are OUR fault — replaying just repeats it.
+        self.assertFalse(self._classify(httpx.LocalProtocolError("bad header")))
+
+    def test_never_retries_unrelated_failures(self):
+        for exc in (KeyboardInterrupt(), ValueError("bad input"),
+                    Exception("prompt is too long")):
+            self.assertFalse(self._classify(exc), exc)
+
+    def test_status_bearing_wins_over_message_match(self):
+        """A status-bearing error whose text happens to mention a drop is
+        still a server verdict — the status check must come first."""
+        class Weird(Exception):
+            status_code = 400
+
+        self.assertFalse(self._classify(Weird("peer closed connection")))
+
+
+class TestTransientDropRetryLoop(unittest.TestCase):
+    """The classifier is only useful if the attempt loop acts on it."""
+
+    def _provider(self):
+        from src.providers.anthropic_provider import AnthropicProvider
+
+        return AnthropicProvider(api_key="sk-test", model="claude-opus-5")
+
+    def _call(self, provider, side_effect, on_text_chunk=None):
+        from unittest.mock import patch
+
+        with patch.object(
+            type(provider), "_stream_attempt", side_effect=side_effect
+        ) as attempt, patch.object(
+            type(provider), "_client_for_request", return_value=MagicMock()
+        ), patch.object(
+            type(provider), "_merge_beta_headers"
+        ), patch.object(
+            type(provider), "_merge_request_id", return_value="req-test"
+        ):
+            try:
+                result = provider.chat_stream_response(
+                    [{"role": "user", "content": "hi"}],
+                    on_text_chunk=on_text_chunk,
+                )
+            except Exception as exc:  # noqa: BLE001 — the assertion subject
+                return attempt, exc
+            return attempt, result
+
+    def test_retries_then_succeeds(self):
+        drop = Exception("peer closed connection without sending complete "
+                         "message body (incomplete chunked read)")
+        sentinel = MagicMock(name="chat-response")
+        attempt, result = self._call(self._provider(), [drop, sentinel])
+        self.assertIs(result, sentinel)
+        self.assertEqual(attempt.call_count, 2, "should re-attempt after a drop")
+
+    def test_does_not_retry_after_text_was_already_emitted(self):
+        """A retry replays the response, so retrying after partial output
+        would emit those chunks TWICE — what query.py:1635 forbids
+        ("never after partial output"). That check lives one layer up and
+        cannot see a retry taken here, so this gate must hold locally.
+
+        Harbor runs without --include-partial-messages, so on_text_chunk is
+        None in a scored trial and the rescue still fires; this only
+        protects the TUI/SDK surfaces that do stream chunks.
+        """
+        seen = []
+        drop = Exception("peer closed connection without sending complete "
+                         "message body (incomplete chunked read)")
+
+        def emit_then_drop(*a, **k):
+            cb = k.get("on_text_chunk")
+            if cb:
+                cb("partial ")
+            raise drop
+
+        provider = self._provider()
+        attempt, exc = self._call(
+            provider, emit_then_drop, on_text_chunk=seen.append
+        )
+        self.assertIn("peer closed connection", str(exc))
+        self.assertEqual(attempt.call_count, 1, "must not replay after output")
+        self.assertEqual(seen, ["partial "], "no duplicated text")
+
+    def test_retries_when_the_drop_happened_before_any_output(self):
+        """The eval case: nothing streamed yet, so replay is safe."""
+        seen = []
+        sentinel = MagicMock(name="chat-response")
+        drop = Exception("peer closed connection (incomplete chunked read)")
+        attempt, result = self._call(
+            self._provider(), [drop, sentinel], on_text_chunk=seen.append
+        )
+        self.assertIs(result, sentinel)
+        self.assertEqual(attempt.call_count, 2)
+        self.assertEqual(seen, [])
+
+    def test_last_attempt_reraises_the_real_error_not_idle_timeout(self):
+        """Exhausting attempts must surface the transport error itself —
+        reporting 'stream idle timeout' for a connection drop sends whoever
+        reads the log looking for the wrong bug."""
+        drop = Exception("peer closed connection without sending complete "
+                         "message body (incomplete chunked read)")
+        attempt, exc = self._call(self._provider(), [drop, drop, drop])
+        self.assertIn("peer closed connection", str(exc))
+        self.assertNotIn("idle timeout", str(exc).lower())
+        self.assertEqual(attempt.call_count, 3, "must exhaust the attempts")
+
+    def test_auth_error_fails_fast_without_retrying(self):
+        class APIStatusError(Exception):
+            def __init__(self, message, status_code):
+                super().__init__(message)
+                self.status_code = status_code
+
+        err = APIStatusError("OAuth access token has been revoked.", 401)
+        attempt, exc = self._call(self._provider(), [err, err, err])
+        self.assertIn("revoked", str(exc))
+        self.assertEqual(attempt.call_count, 1, "auth failures must not retry")

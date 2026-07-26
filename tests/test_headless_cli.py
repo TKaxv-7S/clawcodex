@@ -45,6 +45,11 @@ class _FakeRegistry:
     def list_tools(self):
         return []
 
+    def remove_tool(self, name):
+        # run_headless unregisters AskUserQuestion (no user on
+        # this surface); real ToolRegistry returns a bool.
+        return False
+
 
 @pytest.fixture
 def fake_wiring(monkeypatch):

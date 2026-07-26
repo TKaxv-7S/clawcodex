@@ -226,6 +226,11 @@ class TestHeadlessStartupLoadsPersistedRules(unittest.TestCase):
             def list_tools(self):
                 return []
 
+            def remove_tool(self, name):
+                # run_headless unregisters AskUserQuestion (no user on
+                # this surface); real ToolRegistry returns a bool.
+                return False
+
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             local = root / ".clawcodex" / "settings.local.json"

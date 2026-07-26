@@ -575,6 +575,45 @@ class TestContinuationNudge(_Base):
         )
         self.assertEqual(assistant_count, MAX_CONTINUATION_NUDGES + 1)
 
+    def test_empty_turn_is_reprompted_not_treated_as_completion(self):
+        """An empty assistant turn must not end the run as "completed".
+
+        No text and no tool calls is a degenerate response, not an answer.
+        The continuation nudge can't catch it — that one gates on the text
+        being truthy — so an empty turn fell straight through to
+        Terminal(reason="completed") with an empty result, which every
+        caller records as a clean success.
+
+        Measured on terminal-bench 2.1 (2026-07-25): 3 of 89 trials
+        (break-filter-js-from-html, crack-7z-hash, vulnerable-secret) ended
+        after ONE turn and ONE output token in ~3s, reported success, and
+        scored 0 on tasks Claude Code solved.
+        """
+        from src.types.messages import AssistantMessage
+
+        provider = _provider([_completion("")])
+        msgs, terminal = _run(run_query(_params(self.workspace, provider)))
+        assistant_count = sum(
+            1 for m in msgs if isinstance(m, AssistantMessage)
+        )
+        self.assertGreater(
+            assistant_count, 1,
+            "an empty turn must be re-prompted, not accepted as the answer",
+        )
+        # Bounded by the shared nudge cap — never an unbounded retry loop.
+        self.assertEqual(assistant_count, MAX_CONTINUATION_NUDGES + 1)
+        self.assertEqual(terminal.reason, "completed")
+
+    def test_whitespace_only_turn_is_also_reprompted(self):
+        """Whitespace is as empty as empty — the check strips before testing."""
+        from src.types.messages import AssistantMessage
+
+        provider = _provider([_completion("   \n  ")])
+        msgs, _terminal = _run(run_query(_params(self.workspace, provider)))
+        self.assertGreater(
+            sum(1 for m in msgs if isinstance(m, AssistantMessage)), 1
+        )
+
     def test_completion_text_no_nudge(self):
         provider = _provider([_completion("Done. Everything is complete.")])
         msgs, terminal = _run(run_query(_params(self.workspace, provider)))

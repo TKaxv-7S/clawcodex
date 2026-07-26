@@ -106,6 +106,13 @@ def _patch_provider_only(monkeypatch, *, on_chat=None):
         def list_tools(self):
             return list(self._tools)
 
+        def remove_tool(self, name):
+            # run_headless unregisters AskUserQuestion (nothing on this
+            # surface can answer it); real ToolRegistry returns a bool.
+            before = len(self._tools)
+            self._tools = [t for t in self._tools if getattr(t, "name", None) != name]
+            return len(self._tools) != before
+
         def dispatch(self, call, context):
             return _fake_tool_call(call.input, context)
 
