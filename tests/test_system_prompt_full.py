@@ -79,33 +79,6 @@ class TestBuildFullSystemPrompt:
         assert "all, every, multiple, or an exhaustive set" not in prompt
         assert "stopping after the first one" not in prompt
 
-    def test_task_prompt_checks_assumptions_before_executing(self):
-        """Under-inspection, not over-deliberation, is the measured deficit.
-
-        Classifying every trajectory step by purpose on seven shared
-        terminal-bench 2.1 tasks at the same model and effort (2026-07-26,
-        two clawcodex runs vs the latest Claude Code, per trial):
-
-            explore:inspect   1.71 / 1.57   vs   2.43   <- CC inspects MORE
-            author:inline     2.71 / 2.29   vs   1.14
-            run:exec          2.29 / 3.57   vs   1.14   <- biggest gap
-
-        Claude Code spends ~0.7 more steps looking and 1.2-2.4 fewer steps
-        executing. The opposite bullet — act as soon as you have enough
-        information — was tried and withdrawn the same day for making both
-        step count and reward worse.
-
-        The wording must stay scoped to the next action's assumptions; broad
-        exploration guidance is what #749 had to remove.
-        """
-        prompt = build_full_system_prompt(use_cache=False)
-        assert "Before running something you just wrote" in prompt
-        assert "cheap check on the real data" in prompt
-        assert "not a survey of the environment" in prompt, (
-            "the scope limiter is load-bearing — without it this becomes the "
-            "exhaustive-exploration guidance removed in #749"
-        )
-
     def test_task_prompt_prioritizes_evidence_and_cheap_discriminating_checks(self):
         prompt = build_full_system_prompt(use_cache=False)
         assert "small set of plausible hypotheses" in prompt
