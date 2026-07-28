@@ -801,7 +801,77 @@ class OpenAICompatibleProvider(BaseProvider):
         on_thinking_chunk: TextChunkCallback | None = None,
         **kwargs
     ) -> ChatResponse:
-        """Stream OpenAI-compatible chunks while rebuilding the final response.
+        """Stream a response, re-issuing once if the transport drops.
+
+        A connection that dies mid-response carries no HTTP status and no
+        salvageable output, so re-issuing is the right call — the Anthropic
+        provider has done this since #747. This path did not, and paid for
+        it: on terminal-bench 2.1 with deepseek-v4-pro (2026-07-27),
+        ``peer closed connection without sending complete message body
+        (incomplete chunked read)`` ended 8 of 89 trials — 16% of every
+        failure — including one that had already run 391 seconds of
+        successful work. Same benchmark, same error, same harness; only the
+        wire differed.
+
+        Retry is skipped once any text or reasoning has reached the caller,
+        because the transcript would otherwise show that prefix twice. In a
+        scored trial harbor runs ``--print --output-format stream-json``
+        without ``--include-partial-messages``, so both callbacks are None
+        and the retry always fires.
+
+        Only transport drops qualify (``is_transient_stream_drop``); a 4xx
+        is a server verdict and is re-raised untouched. On the final attempt
+        the ORIGINAL exception propagates, so callers see the real cause
+        rather than a retry wrapper.
+        """
+        from .stream_retry import is_transient_stream_drop
+
+        emitted = [False]
+
+        def _mark_text(text: str) -> None:
+            emitted[0] = True
+            on_text_chunk(text)  # type: ignore[misc] — only built when non-None
+
+        def _mark_thinking(text: str) -> None:
+            emitted[0] = True
+            on_thinking_chunk(text)  # type: ignore[misc]
+
+        max_attempts = 2
+        for attempt in range(1, max_attempts + 1):
+            emitted[0] = False
+            try:
+                return self._stream_attempt(
+                    messages,
+                    tools,
+                    on_text_chunk=_mark_text if on_text_chunk else None,
+                    abort_signal=abort_signal,
+                    on_thinking_chunk=_mark_thinking if on_thinking_chunk else None,
+                    **kwargs,
+                )
+            except Exception as exc:
+                if (
+                    attempt >= max_attempts
+                    or emitted[0]
+                    or not is_transient_stream_drop(exc)
+                ):
+                    raise
+                logger.warning(
+                    "Stream dropped (%s); retrying once: %s",
+                    type(exc).__name__,
+                    str(exc)[:200],
+                )
+        raise AssertionError("unreachable: loop returns or raises")
+
+    def _stream_attempt(
+        self,
+        messages: list[MessageInput],
+        tools: Optional[list[dict[str, Any]]] = None,
+        on_text_chunk: TextChunkCallback | None = None,
+        abort_signal: Any = None,
+        on_thinking_chunk: TextChunkCallback | None = None,
+        **kwargs
+    ) -> ChatResponse:
+        """One streaming attempt. See ``chat_stream_response`` for retry.
 
         ESC-cancellation runs the SDK iteration on a daemon worker
         thread that pushes chunks into a ``queue.Queue``. The main
