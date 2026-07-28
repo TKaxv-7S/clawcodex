@@ -161,44 +161,14 @@ def _api_timeout_seconds() -> float:
     return DEFAULT_API_TIMEOUT_S
 
 
-#: Substrings identifying a TRANSPORT-level stream drop — the connection
-#: died mid-response, with no HTTP status and no model output to salvage.
-#: httpx raises these as ``RemoteProtocolError``/``ReadError``; the SDK
-#: surfaces them as ``APIConnectionError``. Matched on the message as well
-#: as the type because the SDK wraps and re-words some of them.
-_TRANSIENT_STREAM_DROP_MARKERS = (
-    "peer closed connection",
-    "incomplete chunked read",
-    "server disconnected",
-    "connection reset",
-    "connection aborted",
+# Mid-stream drop classification is shared with the OpenAI-compatible
+# wire (src/providers/stream_retry.py) — DeepSeek trials were dying on the
+# exact error this path already survived. Re-exported under the original
+# private names so existing call sites and tests keep resolving.
+from .stream_retry import (  # noqa: E402
+    TRANSIENT_STREAM_DROP_MARKERS as _TRANSIENT_STREAM_DROP_MARKERS,
+    is_transient_stream_drop as _is_transient_stream_drop,
 )
-
-
-def _is_transient_stream_drop(exc: BaseException) -> bool:
-    """True for a mid-stream disconnect that is safe to re-attempt.
-
-    Deliberately narrow. A dropped connection carries no HTTP status and no
-    partial result worth keeping, so re-issuing the request is the same
-    decision the idle watchdog already makes — whereas a 4xx (auth, bad
-    request) must never be retried, and those arrive as ``APIStatusError``
-    subclasses that this predicate rejects via the status-code check.
-
-    Motivation: on terminal-bench 2.1 (regex-chess, 2026-07-25) a single
-    ``peer closed connection without sending complete message body
-    (incomplete chunked read)`` killed a 24-minute trial outright — the
-    agent had just finished a passing 1500-position fuzz run. Claude Code
-    survives the same class of blip; clawcodex scored 0.
-    """
-    # Anything carrying an HTTP status is a server verdict, not a drop.
-    if getattr(exc, "status_code", None) is not None:
-        return False
-    name = type(exc).__name__
-    if name in ("APIConnectionError", "RemoteProtocolError", "ReadError",
-                "ConnectError", "ChunkedEncodingError"):
-        return True
-    text = str(exc).lower()
-    return any(marker in text for marker in _TRANSIENT_STREAM_DROP_MARKERS)
 
 
 def _default_max_tokens(model: str | None) -> int:
