@@ -220,18 +220,35 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
     # ``services/pricing.py`` (the single source the cost path reads). The
     # ``ModelConfig.cost_*`` defaults are unread for these models — duplicating
     # the rates here only invites 10× decimal drift between the two tables.
+    # ``max_output_tokens`` is DeepSeek's documented 384K ceiling, not the
+    # 8_192 first registered here — that was a placeholder sitting next to a
+    # 1M context window, and it under-reported the model by 47x in the
+    # token warning.
+    #
+    # It is ADVISORY on this wire, so correcting it changes little at
+    # runtime: OpenAICompatibleProvider sends no ``max_tokens`` field at all
+    # (unlike AnthropicProvider's ``_default_max_tokens`` or Gemini's
+    # ``config_kwargs["max_output_tokens"]``), so DeepSeek applies its own
+    # server-side default either way. The one live consumer is the
+    # auto-compact reservation, and it clamps to MAX_OUTPUT_TOKENS_FOR_SUMMARY
+    # (20_000), so the effective input window moves 991_808 -> 980_000 — 1.2%,
+    # in the safer direction.
+    #
+    # Recorded because the inertness is easy to mistake for a bug: this value
+    # was briefly suspected of truncating long ``effort=max`` responses on
+    # terminal-bench 2.1, and it cannot, because it never reaches the wire.
     "deepseek-v4-pro": ModelConfig(
         model_id="deepseek-v4-pro",
         display_name="DeepSeek V4 Pro",
         context_window=1_000_000,
-        max_output_tokens=8_192,
+        max_output_tokens=384_000,
         supports_cache=True,
     ),
     "deepseek-v4-flash": ModelConfig(
         model_id="deepseek-v4-flash",
         display_name="DeepSeek V4 Flash",
         context_window=1_000_000,
-        max_output_tokens=8_192,
+        max_output_tokens=384_000,
         supports_cache=True,
     ),
     # Z.ai GLM Coding Plan. glm-5.2 ships a 1M context window (like DeepSeek V4);
