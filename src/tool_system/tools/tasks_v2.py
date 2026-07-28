@@ -541,6 +541,148 @@ Set up task dependencies:
 )
 
 
+# A stall must survive this many *additional* blocking polls past the first
+# (which only records the baseline) before we nudge. So the nudge fires on the
+# 4th identical poll — ~2 min at the 30s default — paired with a wall-clock
+# floor below so a model using tiny timeouts can't trip it in seconds.
+_STUCK_POLL_THRESHOLD = 3
+# The stall must also have persisted at least this long in wall-clock, so
+# ``block=True, timeout=1000`` (1s polls) cannot fire the guard on a job that
+# has barely started.
+_STUCK_MIN_WALL_SECONDS = 60.0
+
+
+def _bg_output_size(entry: dict[str, Any]) -> int:
+    """Monotonic byte size of a background task's log, or -1 if unknowable.
+
+    The FILE size is the progress signal, deliberately not the length of the
+    ``output`` string the poll returned: ``read_background_output`` caps that
+    at the last 200KB and re-seeks, so a chatty, actively-progressing job's
+    reported output plateaus near the cap and its length goes constant even as
+    the job writes. Length would then read as "stuck" and falsely nudge it.
+    The on-disk size keeps growing past the cap, so it stays a true progress
+    signal for high-volume jobs. (Critic M1, 2026-07-27.)
+    """
+    path = entry.get("output_path")
+    if not path:
+        return -1
+    try:
+        from pathlib import Path as _P
+
+        return _P(str(path)).stat().st_size
+    except OSError:
+        return -1
+
+
+def _guard_repeated_polls(
+    task_id: str,
+    result: ToolResult,
+    context: ToolContext,
+) -> ToolResult:
+    """Nudge the model to stop when it keeps polling a stalled background task.
+
+    A background command that cannot finish on its own — an unbounded search,
+    a brute-force, a server with no timeout — turns ``TaskOutput`` into an
+    absorbing state: the model polls, gets "still running, no new output",
+    polls again, and never reconsiders. On terminal-bench 2.1 crack-7z-hash
+    (deepseek-v4-pro, 2026-07-27) an agent launched an incremental
+    john-the-ripper brute-force in the background, then spent its final 20
+    minutes and ~15 consecutive polls waiting on it until the harness killed
+    the trial at 30 minutes. opus-5 finished the same task in 18 seconds.
+
+    Model-agnostic and tool-level. For each background bash task, count
+    consecutive *blocking* polls (``retrieval_status="timeout"``, task still
+    running) whose on-disk log size did not grow. Once that count reaches
+    ``_STUCK_POLL_THRESHOLD`` AND the stall has lasted ``_STUCK_MIN_WALL_SECONDS``,
+    prepend a hint pointing at TaskStop. The hint repeats on every further
+    stuck poll, so a model that ignores it once still sees it. Any growth in
+    the log resets the counter — a slow but progressing job is never nudged,
+    including one whose returned output has saturated the 200KB read window.
+
+    The hint is PREPENDED (not appended) and also exposed as a top-level
+    ``stuck_task_hint`` field, so it survives large-result persistence: an
+    output over ~50KB is replaced with a disk pointer plus a HEAD preview
+    (``content[:max_bytes]``), which would truncate a tail-appended note away.
+    (Critic M2, 2026-07-27.)
+
+    Both poll modes count. This is deliberate and load-bearing: on the
+    crack-7z-hash trajectory, 13 of the 15 polls were ``block=False`` (which
+    returns ``retrieval_status="success"`` on a still-running task, not
+    ``"timeout"``). Gating on the timeout status alone — the obvious reading —
+    would make the guard inert for the exact failure it exists to catch. The
+    signal that matters is "task still running, log not growing", regardless
+    of how the model polled. Counting fast ``block=False`` polls is safe only
+    because ``_STUCK_MIN_WALL_SECONDS`` gates on elapsed time, not poll count,
+    so a burst of instant non-blocking polls cannot fire the nudge on a job
+    that just started.
+
+    Agent subtasks (``LocalAgent``) are excluded: a "no new output" poll there
+    is normal, not stuck.
+    """
+    import time
+
+    out = result.output
+    if not isinstance(out, dict):
+        return result
+    task = out.get("task")
+    if not isinstance(task, dict):
+        return result
+    if task.get("task_type") != "bash_background":
+        return result
+
+    entry = context.background_bash_tasks.get(task_id)
+    if not isinstance(entry, dict):
+        return result
+
+    # A terminal task needs no nudge — the model will stop polling naturally.
+    # Reset so a later stall on a reused id starts fresh. Any non-running
+    # status lands here regardless of retrieval_status.
+    if task.get("status") != "running":
+        entry["_stuck_polls"] = 0
+        entry.pop("_stuck_since", None)
+        return result
+
+    cur_size = _bg_output_size(entry)
+    prev_size = entry.get("_stuck_last_size")
+    if prev_size is not None and cur_size == prev_size:
+        entry["_stuck_polls"] = int(entry.get("_stuck_polls", 0)) + 1
+        entry.setdefault("_stuck_since", time.monotonic())
+    else:
+        entry["_stuck_polls"] = 0
+        entry["_stuck_last_size"] = cur_size
+        entry.pop("_stuck_since", None)
+
+    stalled_for = time.monotonic() - entry.get("_stuck_since", time.monotonic())
+    if (
+        entry.get("_stuck_polls", 0) < _STUCK_POLL_THRESHOLD
+        or stalled_for < _STUCK_MIN_WALL_SECONDS
+    ):
+        return result
+
+    polls = entry["_stuck_polls"] + 1  # +1: the first poll set the baseline
+    hint = (
+        f"[stuck-task guard] This background task has been polled {polls} "
+        f"times with no new output for ~{stalled_for / 60:.0f} min and is "
+        f"still running. If it may not terminate on its own — an unbounded "
+        f"search, a brute-force, a wait for something that will not arrive — "
+        f"stop it with TaskStop(task_id={task_id!r}) and take a different "
+        f"approach instead of polling again. If it is genuinely making slow "
+        f"progress, keep waiting."
+    )
+    # Copy so the stored snapshot / other readers are untouched. Prepend to the
+    # output AND surface a top-level field, so the note lands in the head
+    # preview if this result is persisted for size.
+    new_task = dict(task)
+    new_task["output"] = hint + "\n\n" + str(task.get("output") or "")
+    # ``stuck_task_hint`` FIRST so it heads the serialized JSON: a >50KB result
+    # is persisted to disk with a head preview (``content[:max_bytes]``), and a
+    # leading key survives that where a trailing one would not. The prepend
+    # into ``task.output`` is the second line of defense for the in-context
+    # (un-persisted) read.
+    new_out = {"stuck_task_hint": hint, **out, "task": new_task}
+    return ToolResult(name=result.name, output=new_out)
+
+
 async def _task_output_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
     """Return the current state / output of a runtime task or todo.
 
@@ -583,8 +725,12 @@ async def _task_output_call(tool_input: dict[str, Any], context: ToolContext) ->
     runtime = context.runtime_tasks.get(task_id)
     if runtime is not None:
         if not block:
-            return _runtime_task_to_output(task_id, runtime, context)
-        return await _poll_runtime_until_terminal(task_id, timeout_seconds, context)
+            result = _runtime_task_to_output(task_id, runtime, context)
+        else:
+            result = await _poll_runtime_until_terminal(
+                task_id, timeout_seconds, context
+            )
+        return _guard_repeated_polls(task_id, result, context)
 
     # Branch 2 — TaskCreate / tasks_v2 todos. Same key space, different
     # semantics; no polling — output text is set or not at the moment
