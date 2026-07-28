@@ -49,7 +49,19 @@ def test_is_deepseek_flag_scoped_to_deepseek_provider():
 def test_deepseek_v4_context_windows_registered():
     assert get_context_window_for_model("deepseek-v4-pro") == 1_000_000
     assert get_context_window_for_model("deepseek-v4-flash") == 1_000_000
-    assert get_model_max_output_tokens("deepseek-v4-pro") == 8_192
+    # DeepSeek's documented ceiling. Was 8_192 — a placeholder that
+    # under-reported the model 47x in the token warning and looked absurd
+    # beside a 1M context window.
+    #
+    # Advisory on this wire: OpenAICompatibleProvider sends no ``max_tokens``
+    # field (unlike AnthropicProvider's _default_max_tokens or Gemini's
+    # config_kwargs), so DeepSeek applies its own server default either way,
+    # and the auto-compact reservation clamps to MAX_OUTPUT_TOKENS_FOR_SUMMARY
+    # (20_000). Effective input therefore moves 991_808 -> 980_000 only.
+    # Pinned so nobody "fixes" a timeout by editing this number: it cannot
+    # truncate a response, because it never reaches the request.
+    assert get_model_max_output_tokens("deepseek-v4-pro") == 384_000
+    assert get_model_max_output_tokens("deepseek-v4-flash") == 384_000
 
 
 def test_other_providers_context_window_unchanged():
