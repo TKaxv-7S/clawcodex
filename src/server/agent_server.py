@@ -1549,7 +1549,12 @@ class _AgentSession:
                     return True
 
             fused = build_fusion_provider(fusion)
-            self._install_provider(fused, fusion.base.provider, fusion.base.model)
+            self._install_provider(
+                fused, fusion.base.provider, fusion.base.model,
+                # Persist the NAME the user selected, so a restart restores
+                # the fusion model rather than the bare base model.
+                persist_model=fusion.name,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.exception("[agent-server] fusion model switch failed")
             self._reply(request_id, {
@@ -1600,7 +1605,8 @@ class _AgentSession:
             self._reply(request_id, {"ok": False, "error": str(exc)})
 
     def _install_provider(
-        self, provider: Any, name: str, model: str | None
+        self, provider: Any, name: str, model: str | None,
+        *, persist_model: str | None = None,
     ) -> None:
         """Adopt ``provider`` as the session's provider, rebuilding the registry.
 
@@ -1614,6 +1620,14 @@ class _AgentSession:
         ``model`` is the id to record as current; for a fusion model that is
         the base model, since that is what serves the turn (see
         ``FusionProvider.model``).
+
+        ``persist_model`` is what gets PERSISTED as the user's choice, when
+        it differs from ``model``. For a fusion model that is the fusion
+        NAME: persisting the base id instead would restore the next session
+        as the plain base model and silently drop vision — the user picked
+        ``deepseek-v4-pro-V``, not ``deepseek-v4-pro``. The restore side
+        (``settings.get_persisted_model``) resolves that name back to the
+        fusion record.
         """
         from src.tool_system.defaults import build_default_registry
 
@@ -1650,7 +1664,7 @@ class _AgentSession:
         # pair coherent across a provider switch — the supplier reads
         # self.provider_name, updated above, so on_change persists the
         # new pairing.
-        _dispatch_app_state(self, main_loop_model=model)
+        _dispatch_app_state(self, main_loop_model=persist_model or model)
         # INTEG-1 warm-on-activation (the refreshStartupDiscoveryForActiveRoute
         # analog, discoveryService.ts:415): one non-blocking
         # get_available_models call kicks the single-flight background
@@ -4746,18 +4760,30 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
 
         provider_name = cfg.provider_name or get_default_provider()
 
-        # ``--model <name>`` may name a FUSION model, which is not a real
-        # model id on any provider: handing it to the provider constructor
-        # would put it on the wire and 400. Resolved BEFORE the credential
-        # gate below, because a fusion model overrides the session's
-        # provider — gating on the session default first would refuse to
-        # start when that unrelated provider happens to be unconfigured,
-        # even though the fusion model's own providers are fine.
+        # Model precedence, mirroring TS ``main.tsx:1984``
+        # (``userSpecifiedModel ?? getUserSpecifiedModelSetting() ?? null``):
+        # an explicit --model wins, then the persisted /model choice, then
+        # the provider default (applied below). Without the middle term a
+        # /model switch never survived a restart — the write side has always
+        # persisted (model, model_provider); nothing ever read it back.
+        from src.settings.settings import get_persisted_model
+
+        model_choice = cfg.model or get_persisted_model(
+            provider_name, provider_is_explicit=bool(cfg.provider_name)
+        )
+
+        # ``model_choice`` may name a FUSION model, which is not a real model
+        # id on any provider: handing it to the provider constructor would
+        # put it on the wire and 400. Resolved BEFORE the credential gate
+        # below, because a fusion model overrides the session's provider —
+        # gating on the session default first would refuse to start when that
+        # unrelated provider happens to be unconfigured, even though the
+        # fusion model's own providers are fine.
         fusion = None
         try:
             from src.providers.fusion_models import get_fusion_model
 
-            candidate = get_fusion_model(cfg.model) if cfg.model else None
+            candidate = get_fusion_model(model_choice) if model_choice else None
             fusion = candidate if (candidate and candidate.enabled) else None
         except Exception:  # noqa: BLE001 — never block startup on this
             logger.debug("[agent-server] fusion lookup at init failed", exc_info=True)
@@ -4803,7 +4829,7 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
             provider = build_fusion_provider(fusion)
         else:
             provider_cls = get_provider_class(provider_name)
-            model = cfg.model or provider_cfg.get("default_model")
+            model = model_choice or provider_cfg.get("default_model")
             provider = provider_cls(
                 api_key=api_key, base_url=provider_cfg.get("base_url"), model=model
             )
@@ -4910,13 +4936,26 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
                 )
 
                 set_active_provider_supplier(lambda: sess.provider_name)
+                # The persisted-model restore now happens ONCE, above, via
+                # ``model_choice`` — before construction, because a fusion
+                # name decides which provider gets built at all. The old
+                # post-construction ``provider.model = main_loop_model``
+                # assignment is therefore gone, not merely guarded: it read
+                # ``settings.model`` RAW, so a persisted fusion name that
+                # ``get_persisted_model`` had correctly declined (disabled,
+                # or not matching an explicit --provider) would still be
+                # assigned here and reach the wire as a bogus model id.
+                # One rule, one place.
+                #
+                # The store's ``main_loop_model`` is likewise pinned to the
+                # resolution actually in force, so the state the client reads
+                # cannot disagree with the provider that was built.
                 seeded_state = replace_state(
                     seed_app_state_from_settings(provider_name),
                     permission_mode=mode,
+                    main_loop_model=(fusion.name if fusion is not None else model),
                 )
                 sess.app_state_store = create_app_state_store(seeded_state)
-                if cfg.model is None and seeded_state.main_loop_model:
-                    provider.model = seeded_state.main_loop_model
             except Exception:  # noqa: BLE001 — store failure must not break startup
                 logger.debug("[agent-server] app-state store init failed",
                              exc_info=True)

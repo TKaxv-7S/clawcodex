@@ -35,7 +35,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     are stored in `~/.clawcodex/config.json` under `fusionModels` (user-level
     only, so a checked-out repo cannot redirect where your screenshots go).
   - A saved fusion model behaves like a normal model: it appears in the
-    `/model` picker and works as `--model <name>`, interactively and in `-p`.
+    `/model` picker, works as `--model <name>` interactively and in `-p`, and
+    **survives a restart** — selecting one persists the fusion *name*, and
+    startup resolves it back to the pair. Deleting or disabling a fusion
+    model that was the persisted choice falls back to the provider default
+    instead of leaving a dangling name on the wire.
   - Each distinct image is described once per session, so replayed history
     does not re-pay for the same screenshot. Vision failures degrade to a note
     naming the cause rather than killing the turn.
@@ -46,6 +50,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     are now marked vision-less in the model table.
 
   [claude-code-router]: https://ccrdesk.top/en/configuration/fusion-models/
+
+### Fixed
+
+- **`--model`/`/model` selection is now resolved from one rule at every
+  entrypoint.** The persisted `/model` choice was applied only in the
+  interactive agent-server, and only *after* the provider was constructed
+  (`_build_runtime`'s post-construction `provider.model = ...`). Headless
+  (`-p`) ignored it entirely, so a `/model` switch had to be re-stated with
+  `--model` on every subsequent run. Both entrypoints now share
+  `settings.get_persisted_model` and TS's precedence — explicit `--model`,
+  then the persisted choice, then the provider default
+  (`main.tsx:1984`: `userSpecifiedModel ?? getUserSpecifiedModelSetting() ?? null`)
+  — resolved *before* construction, which is also what lets a persisted
+  fusion model decide which provider to build. The cross-provider staleness
+  guard (`settings.model_provider` must match) is unchanged; a fusion model
+  is exempt because its record names its own provider.
+
+  `apply_persisted_model` (post-construction, no callers) is replaced by
+  `get_persisted_model`.
 
 ### Changed
 

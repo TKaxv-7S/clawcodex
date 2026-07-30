@@ -278,6 +278,100 @@ def test_delete_removes_only_the_named_model():
     assert [m.name for m in load_fusion_models()] == ["b"]
 
 
+def _persist_selection(model: str, provider: str = "deepseek") -> None:
+    from src import config as cfg_mod
+    from src.settings.settings import invalidate_settings_cache
+
+    mgr = cfg_mod._get_default_manager()
+    cfg = mgr.load_global()
+    cfg["settings"] = {"model": model, "model_provider": provider}
+    mgr.save_global(cfg)
+    invalidate_settings_cache()
+
+
+def test_persisted_fusion_model_overrides_the_configured_default_provider():
+    # A fusion record names its own provider, so restoring it is meaningful
+    # even when the session's DEFAULT provider is something else — that is
+    # the point of having selected it.
+    from src.settings.settings import get_persisted_model
+
+    create_fusion_model("dsv", BASE, VISION)
+    _persist_selection("dsv")
+    assert get_persisted_model("anthropic") == "dsv"
+
+
+def test_persisted_fusion_model_yields_to_an_EXPLICIT_provider():
+    # Restoring a fusion model REPLACES the session provider with its base,
+    # so honouring it over an explicit `--provider` would silently ignore
+    # what the user just typed. Explicit intent wins.
+    from src.settings.settings import get_persisted_model
+
+    create_fusion_model("dsv", BASE, VISION)          # base is deepseek:…
+    _persist_selection("dsv")
+    assert get_persisted_model("openrouter", provider_is_explicit=True) == ""
+    # …but an explicit provider that MATCHES the fusion's base still restores.
+    assert get_persisted_model("deepseek", provider_is_explicit=True) == "dsv"
+
+
+def test_delete_clears_a_persisted_selection_naming_it():
+    # Otherwise the restore reads a dangling name, finds no fusion record,
+    # falls through to the plain-model branch, and puts a string that is not
+    # a real model id on the wire — a 400 on the next launch.
+    from src import config as cfg_mod
+    from src.settings.settings import get_persisted_model, invalidate_settings_cache
+
+    create_fusion_model("dsv", BASE, VISION)
+    mgr = cfg_mod._get_default_manager()
+    cfg = mgr.load_global()
+    cfg["settings"] = {"model": "dsv", "model_provider": "deepseek"}
+    mgr.save_global(cfg)
+    invalidate_settings_cache()
+    assert get_persisted_model("deepseek") == "dsv"
+
+    delete_fusion_model("dsv")
+    invalidate_settings_cache()
+    assert get_persisted_model("deepseek") == ""
+
+
+def test_delete_leaves_an_unrelated_persisted_selection_alone():
+    from src import config as cfg_mod
+    from src.settings.settings import get_persisted_model, invalidate_settings_cache
+
+    create_fusion_model("dsv", BASE, VISION)
+    mgr = cfg_mod._get_default_manager()
+    cfg = mgr.load_global()
+    cfg["settings"] = {"model": "deepseek-v4-flash", "model_provider": "deepseek"}
+    mgr.save_global(cfg)
+    invalidate_settings_cache()
+
+    delete_fusion_model("dsv")
+    invalidate_settings_cache()
+    assert get_persisted_model("deepseek") == "deepseek-v4-flash"
+
+
+def test_disabled_fusion_model_resolves_to_nothing_without_clearing():
+    # Disable does not dangle: the record still exists, so the restore side
+    # sees `enabled=False` and declines. The configuration is preserved so
+    # re-enabling restores the selection too.
+    from src import config as cfg_mod
+    from src.settings.settings import get_persisted_model, invalidate_settings_cache
+
+    create_fusion_model("dsv", BASE, VISION)
+    mgr = cfg_mod._get_default_manager()
+    cfg = mgr.load_global()
+    cfg["settings"] = {"model": "dsv", "model_provider": "deepseek"}
+    mgr.save_global(cfg)
+    invalidate_settings_cache()
+
+    set_fusion_model_enabled("dsv", False)
+    invalidate_settings_cache()
+    assert get_persisted_model("deepseek") == ""
+
+    set_fusion_model_enabled("dsv", True)
+    invalidate_settings_cache()
+    assert get_persisted_model("deepseek") == "dsv"
+
+
 def test_delete_unknown_raises_and_lists_known():
     create_fusion_model("a", BASE, VISION)
     with pytest.raises(FusionModelError, match="Known: a"):

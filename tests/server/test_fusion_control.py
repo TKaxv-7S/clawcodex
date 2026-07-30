@@ -75,6 +75,18 @@ class _IsolatedConfig:
         return self
 
     def __exit__(self, *a):
+        # The active-provider supplier and app-state singletons are
+        # module-level; leaving them set would bleed into later tests.
+        try:
+            from src.state.app_state import (
+                reset_state_for_tests,
+                set_active_provider_supplier,
+            )
+
+            set_active_provider_supplier(None)
+            reset_state_for_tests()
+        except Exception:  # noqa: BLE001
+            pass
         cfg_mod = self._cfg_mod
         (
             cfg_mod.GLOBAL_CONFIG_FILE,
@@ -107,6 +119,18 @@ def _make_session(single_session: bool = True) -> tuple[_AgentSession, list[dict
     provider.get_available_models = lambda: ["deepseek-v4-pro", "deepseek-v4-flash"]
     sess.provider = provider
     sess.provider_name = "deepseek"
+    # An AppState store, as `_build_runtime` creates for single_session.
+    # Without it `_dispatch_app_state` is a NO-OP, so nothing persists and
+    # any assertion about the saved model passes or fails for the wrong
+    # reason (the restart-blind-store trap).
+    from src.state.app_state import (
+        AppState,
+        create_app_state_store,
+        set_active_provider_supplier,
+    )
+
+    set_active_provider_supplier(lambda: sess.provider_name)
+    sess.app_state_store = create_app_state_store(AppState())
     return sess, emitted
 
 
@@ -353,6 +377,113 @@ class TestFusionModelSelection(unittest.TestCase):
             init = next(e for e in emitted if e.get("subtype") == "init")
             self.assertEqual(init["fusion"], "dsv")
             self.assertEqual(init["model"], "deepseek-v4-pro")
+
+    def test_switch_persists_the_fusion_NAME_not_the_base_model(self) -> None:
+        # The restore side resolves this string back to a fusion record, so
+        # persisting the base id would restore the next session as the plain
+        # base model and silently drop vision.
+        with _IsolatedConfig():
+            sess, emitted = _make_session()
+            _control(sess, "fusion", arg=f"create dsv {BASE} {VISION}")
+            _control(sess, "set_model", model="dsv")
+
+            from src.settings.settings import get_settings, invalidate_settings_cache
+
+            invalidate_settings_cache()
+            s = get_settings()
+            self.assertEqual(s.model, "dsv")
+            self.assertEqual(s.model_provider, "deepseek")
+
+    def test_persisted_fusion_model_is_restored_at_startup(self) -> None:
+        # The round trip: /model dsv → restart → still fused.
+        with _IsolatedConfig():
+            sess, emitted = _make_session()
+            _control(sess, "fusion", arg=f"create dsv {BASE} {VISION}")
+            _control(sess, "set_model", model="dsv")
+
+            from src.settings.settings import (
+                get_persisted_model,
+                invalidate_settings_cache,
+            )
+
+            invalidate_settings_cache()
+            # A fusion model names its own provider, so it restores even when
+            # the session default is a DIFFERENT provider — unlike a plain
+            # model, which the staleness guard would drop.
+            self.assertEqual(get_persisted_model("deepseek"), "dsv")
+            self.assertEqual(get_persisted_model("anthropic"), "dsv")
+
+    def test_disabled_fusion_model_is_not_restored(self) -> None:
+        # A since-disabled name must fall through to the provider default
+        # rather than reaching the wire as a bogus model id.
+        with _IsolatedConfig():
+            sess, emitted = _make_session()
+            _control(sess, "fusion", arg=f"create dsv {BASE} {VISION}")
+            _control(sess, "set_model", model="dsv")
+            _control(sess, "fusion", arg="disable dsv")
+
+            from src.settings.settings import (
+                get_persisted_model,
+                invalidate_settings_cache,
+            )
+
+            invalidate_settings_cache()
+            self.assertEqual(get_persisted_model("deepseek"), "")
+
+    def test_deleted_fusion_model_is_not_restored(self) -> None:
+        with _IsolatedConfig():
+            sess, emitted = _make_session()
+            _control(sess, "fusion", arg=f"create dsv {BASE} {VISION}")
+            _control(sess, "set_model", model="dsv")
+            _control(sess, "fusion", arg="delete dsv")
+
+            from src.settings.settings import (
+                get_persisted_model,
+                invalidate_settings_cache,
+            )
+
+            invalidate_settings_cache()
+            # Falls through to the provider default; "dsv" must never reach
+            # the wire as a model id.
+            self.assertEqual(get_persisted_model("deepseek"), "")
+
+    def test_a_declined_persisted_fusion_name_never_reaches_the_provider(self) -> None:
+        # THE second read path. `get_persisted_model` correctly declines a
+        # DISABLED fusion model, but `seed_app_state_from_settings` reads
+        # `settings.model` RAW and still yields the fusion name — so the old
+        # post-construction `provider.model = seeded.main_loop_model`
+        # backstop would assign it anyway and put a string that is not a real
+        # model id on the wire. Both paths must agree.
+        with _IsolatedConfig():
+            from src.settings.settings import (
+                get_persisted_model,
+                invalidate_settings_cache,
+            )
+            from src.state.app_state import seed_app_state_from_settings
+
+            sess, emitted = _make_session()
+            _control(sess, "fusion", arg=f"create dsv {BASE} {VISION}")
+            _control(sess, "set_model", model="dsv")
+            _control(sess, "fusion", arg="disable dsv")
+            invalidate_settings_cache()
+
+            # The raw seed still carries the name — that is the trap.
+            self.assertEqual(
+                seed_app_state_from_settings("deepseek").main_loop_model, "dsv"
+            )
+            # The resolution in force declines it.
+            self.assertEqual(get_persisted_model("deepseek"), "")
+            # And no code path may turn that raw seed into a wire model id.
+            import inspect
+
+            from src.server import agent_server as mod
+
+            src = inspect.getsource(mod._build_runtime)
+            self.assertNotIn(
+                "provider.model = seeded_state.main_loop_model", src,
+                "the raw-seed assignment is back — a declined fusion name "
+                "would reach the wire",
+            )
 
     def test_plain_model_switch_is_unaffected(self) -> None:
         with _IsolatedConfig():

@@ -538,6 +538,43 @@ def create_fusion_model(
     return model
 
 
+def _forget_persisted_selection(name: str) -> None:
+    """Clear ``settings.model`` if it names ``name``.
+
+    A fusion model can be the persisted ``/model`` choice
+    (``settings.get_persisted_model`` restores it at startup). Deleting or
+    disabling it would otherwise leave a DANGLING name behind: the restore
+    reads it, finds no fusion record, and falls through to the plain-model
+    branch — putting a string that is not a real model id on the wire, for a
+    400 on the next launch.
+
+    Clearing at the mutation is the narrow fix. It cannot cover a config
+    hand-edited to remove the record directly; that residue degrades to a
+    clear API error rather than silent misbehaviour, the same bounded
+    caveat as the create-time-only shadow guard.
+
+    Best-effort: failing to clear must not fail the delete/disable the user
+    asked for.
+    """
+    try:
+        from src.settings.settings import invalidate_settings_cache
+
+        mgr = _manager()
+        cfg = mgr.load_global()
+        section = cfg.get("settings")
+        if not isinstance(section, dict):
+            return
+        if str(section.get("model", "")).strip().lower() != name.strip().lower():
+            return
+        section["model"] = ""
+        section["model_provider"] = ""
+        cfg["settings"] = section
+        mgr.save_global(cfg)
+        invalidate_settings_cache()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def delete_fusion_model(name: str) -> FusionModel:
     """Remove a fusion model by name. Returns the removed record."""
     existing = load_fusion_models()
@@ -547,6 +584,7 @@ def delete_fusion_model(name: str) -> FusionModel:
         raise FusionModelError(_unknown_message(name))
     removed = next(m for m in existing if m.name.lower() == key)
     save_fusion_models(kept)
+    _forget_persisted_selection(removed.name)
     return removed
 
 
