@@ -149,6 +149,23 @@ def run_headless(options: HeadlessOptions) -> int:
     start_deferred_prefetches(cwd=str(workspace_root))
 
     provider_name = options.provider_name or get_default_provider()
+
+    # ``--model <name>`` may name a FUSION model (a text-only base model plus
+    # a borrowed vision model — see src/providers/fusion_models.py). That
+    # name is not a real model id on any provider, so it has to be resolved
+    # here; passing it to the constructor would send it to the wire and 400.
+    # Images reach headless too (``@shot.png`` in the prompt, a Read of an
+    # image), so this is not interactive-only sugar.
+    from src.providers.fusion_models import get_fusion_model
+
+    _fusion = get_fusion_model(options.model) if options.model else None
+    if _fusion is not None and not _fusion.enabled:
+        cli_error(
+            f"error: fusion model '{_fusion.name}' is disabled — enable it with "
+            f"`/fusion enable {_fusion.name}`",
+            2,
+        )
+
     # ENTRY-2: the config-load + key checks moved into the SHARED startup
     # validator (src/entrypoints/provider_validation.py) so this path, the
     # bare-interactive path, and `clawcodex tui` can never drift on message
@@ -156,19 +173,51 @@ def run_headless(options: HeadlessOptions) -> int:
     # failure with the exact messages this block used to print inline.
     # (cli.main already validated for the `-p` route — this repeat is
     # idempotent defense-in-depth for direct run_headless callers.)
+    #
+    # SKIPPED for a fusion model, whose record overrides the session's
+    # provider: this validator is FATAL (SystemExit(2)), so running it on the
+    # session default would refuse to start whenever that unrelated provider
+    # is unconfigured even though the fusion model's own two providers are
+    # fine. The fusion branch below validates those instead — both halves,
+    # with the same exit(2) contract, so nothing is merely skipped.
     from src.entrypoints.provider_validation import validate_provider_at_startup
 
-    validate_provider_at_startup(options.provider_name, interactive=False, exit_code=2)
-    provider_cfg = get_provider_config(provider_name)  # validated above
+    if _fusion is None:
+        validate_provider_at_startup(
+            options.provider_name, interactive=False, exit_code=2
+        )
+    provider_cfg = get_provider_config(provider_name)
     api_key = resolve_api_key(provider_name, provider_cfg)
 
-    provider_cls = get_provider_class(provider_name)
-    model = options.model or provider_cfg.get("default_model")
-    provider = provider_cls(
-        api_key=api_key,
-        base_url=provider_cfg.get("base_url"),
-        model=model,
-    )
+    if _fusion is not None:
+        from src.providers import provider_has_credentials
+        from src.providers.fusion_provider import build_fusion_provider
+
+        # The fusion model's OWN two providers are what must be usable, so
+        # they are validated here in place of the session default. Both
+        # halves: without the vision check the run starts and then every
+        # image degrades to a "vision model failed" note. Non-interactive →
+        # exit(2) with the message, matching the validator's contract.
+        for _ref, _role in ((_fusion.base, "base"), (_fusion.vision, "vision")):
+            _cfg = get_provider_config(_ref.provider)
+            if not provider_has_credentials(_ref.provider, resolve_api_key(_ref.provider, _cfg)):
+                cli_error(
+                    f"error: fusion model '{_fusion.name}' needs credentials for its "
+                    f"{_role} provider '{_ref.provider}'. Run `clawcodex login`.",
+                    2,
+                )
+        provider_name = _fusion.base.provider
+        provider_cfg = get_provider_config(provider_name)
+        model = _fusion.base.model
+        provider = build_fusion_provider(_fusion)
+    else:
+        provider_cls = get_provider_class(provider_name)
+        model = options.model or provider_cfg.get("default_model")
+        provider = provider_cls(
+            api_key=api_key,
+            base_url=provider_cfg.get("base_url"),
+            model=model,
+        )
 
     session = Session.create(provider_name, getattr(provider, "model", model or ""))
 
