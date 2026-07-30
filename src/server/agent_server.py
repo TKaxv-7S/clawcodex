@@ -4768,8 +4768,22 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
         # persisted (model, model_provider); nothing ever read it back.
         from src.settings.settings import get_persisted_model
 
-        model_choice = cfg.model or get_persisted_model(
-            provider_name, provider_is_explicit=bool(cfg.provider_name)
+        #
+        # single_session ONLY, deliberately. The persisted choice lives in
+        # the HOST's user settings, and the old post-construction restore
+        # sat inside the ``if cfg.single_session:`` block below — so reading
+        # it here unguarded would newly apply the server operator's model to
+        # every client session on the multi-session --http transport. Same
+        # shape as the bypass-availability refusal further down ("would let
+        # the server host's own settings unlock bypass for every client
+        # session"); milder consequence, but a scope change should be a
+        # decision rather than a side effect of moving the read earlier.
+        model_choice = cfg.model or (
+            get_persisted_model(
+                provider_name, provider_is_explicit=bool(cfg.provider_name)
+            )
+            if cfg.single_session
+            else ""
         )
 
         # ``model_choice`` may name a FUSION model, which is not a real model
@@ -4917,15 +4931,14 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
         # ch03 round-4 GAP A — re-home the two-tier bridge: a per-session
         # AppState store whose on_change router runs the centralized side
         # effects (bootstrap model mirror + user-settings persistence).
-        # The seed applies a persisted /model choice back to the provider
-        # under seed_app_state_from_settings' provider-match guard — an
-        # explicit model (CLI/client cfg.model) always wins. The initial
-        # state carries the session's real launch permission mode (critic
-        # n5: seeding the default then dispatching the true mode would
-        # fire a spurious first mode-change notification). Gated
-        # single_session (same rule as ch02's env apply): user-level
-        # settings writes must not fire from client-supplied --http
-        # sessions.
+        # The persisted /model choice is applied ABOVE, pre-construction,
+        # via ``model_choice``; the seed no longer writes to the provider
+        # (see the note where the store is built). The initial state
+        # carries the session's real launch permission mode (critic n5:
+        # seeding the default then dispatching the true mode would fire a
+        # spurious first mode-change notification). Gated single_session
+        # (same rule as ch02's env apply): user-level settings writes must
+        # not fire from client-supplied --http sessions.
         if cfg.single_session:
             try:
                 from src.state.app_state import (

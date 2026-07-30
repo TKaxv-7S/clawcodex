@@ -553,24 +553,24 @@ def _forget_persisted_selection(name: str) -> None:
     clear API error rather than silent misbehaviour, the same bounded
     caveat as the create-time-only shadow guard.
 
-    Best-effort: failing to clear must not fail the delete/disable the user
-    asked for.
+    Best-effort: failing to clear must not fail the delete the user asked
+    for.
+
+    Writes through ``state.app_state._persist_settings_keys`` — the same
+    helper the ``/model`` write side uses — rather than hand-rolling the
+    load/mutate/save/invalidate sequence. Hand-rolling it would silently
+    stop clearing if the persistence format ever moved, and the dangling
+    name would come back. ``model=""`` + ``model_provider=""`` is that
+    module's unset convention, so clear and set stay symmetric.
     """
     try:
-        from src.settings.settings import invalidate_settings_cache
+        from src.settings.settings import get_settings
+        from src.state.app_state import _persist_settings_keys
 
-        mgr = _manager()
-        cfg = mgr.load_global()
-        section = cfg.get("settings")
-        if not isinstance(section, dict):
+        current = str(getattr(get_settings(), "model", "") or "").strip()
+        if current.lower() != name.strip().lower():
             return
-        if str(section.get("model", "")).strip().lower() != name.strip().lower():
-            return
-        section["model"] = ""
-        section["model_provider"] = ""
-        cfg["settings"] = section
-        mgr.save_global(cfg)
-        invalidate_settings_cache()
+        _persist_settings_keys(model="", model_provider="")
     except Exception:  # noqa: BLE001
         pass
 

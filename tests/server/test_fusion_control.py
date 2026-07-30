@@ -485,6 +485,24 @@ class TestFusionModelSelection(unittest.TestCase):
                 "would reach the wire",
             )
 
+    def test_store_pinning_keeps_app_state_agreeing_with_the_provider(self) -> None:
+        # `_build_runtime` pins the seeded `main_loop_model` to the
+        # resolution actually in force. Without it the raw seed wins, and in
+        # the disabled-fusion case app state reports 'dsv' while the provider
+        # is on the plain default — the client would show a fusion model that
+        # is not running. Asserted on the pinning EXPRESSION, since exercising
+        # `_build_runtime` needs a full startup.
+        import inspect
+
+        from src.server import agent_server as mod
+
+        src = inspect.getsource(mod._build_runtime)
+        self.assertIn(
+            "main_loop_model=(fusion.name if fusion is not None else model)", src,
+            "the store seed is no longer pinned to the resolved selection — "
+            "app state can disagree with the provider that was built",
+        )
+
     def test_plain_model_switch_is_unaffected(self) -> None:
         with _IsolatedConfig():
             sess, emitted = _make_session()
