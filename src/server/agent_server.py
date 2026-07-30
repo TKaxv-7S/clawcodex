@@ -283,6 +283,10 @@ class _AgentSession:
             "session_id": self.session_id,
             "protocol_version": PROTOCOL_VERSION,
             "model": getattr(self.provider, "model", self.config.model),
+            # The active fusion model's name, "" when not fused. Carried on
+            # init (not just the set_model reply) so a session started with
+            # ``--model <fusion-name>`` shows it from the first frame.
+            "fusion": self._active_fusion_name(),
             "provider": self.provider_name,
             "cwd": self.cwd,
             "tools": tools,
@@ -625,6 +629,12 @@ class _AgentSession:
                 "model": getattr(self.provider, "model", None),
                 "provider": self.provider_name,
                 "available_models": self._available_models(),
+                # The active fusion model's NAME, or "" when not on one.
+                # ``model`` above stays the base model id (what serves the
+                # turn, and what cost/context-window lookups key off), so
+                # this is the only channel telling the client that images
+                # are being routed through a second model.
+                "fusion": self._active_fusion_name(),
                 # OS-1 W3 — the /output-style no-arg display.
                 "output_style": getattr(self.tool_context, "output_style_name", None) or "default",
                 "available_output_styles": self._available_output_styles(),
@@ -815,6 +825,9 @@ class _AgentSession:
             return
         if subtype == "eco":
             self._do_eco_command(request_id, inner.get("arg"))
+            return
+        if subtype == "fusion":
+            self._do_fusion_command(request_id, inner.get("arg"))
             return
         if subtype == "worktree_status":
             await self._do_worktree_status(request_id)
@@ -1211,16 +1224,48 @@ class _AgentSession:
         except Exception:  # noqa: BLE001
             return ["default", "explanatory"]
 
+    def _active_fusion_name(self) -> str:
+        """The active fusion model's name, or ``""`` when not on one.
+
+        Type-checked rather than a bare ``getattr(...) or ""``: this value
+        is serialized onto the NDJSON control channel, so a provider (or a
+        test double) answering a non-string for ``fusion_name`` would put
+        an unserializable object on the wire and break the channel for the
+        whole session. Cheap insurance on an attribute read from a
+        duck-typed object.
+        """
+        name = getattr(self.provider, "fusion_name", "")
+        return name if isinstance(name, str) else ""
+
     def _available_models(self) -> list[str]:
-        """Provider's selectable models (for the /model picker). Best-effort."""
+        """Selectable models for the /model picker. Best-effort.
+
+        Enabled fusion models are listed FIRST, then the provider's own
+        models. CCR's contract is that a saved Fusion model "appears in
+        routing and Agent Profiles like a normal model"; the picker is this
+        client's equivalent surface, and a fusion model that cannot be found
+        there is effectively unusable outside typed ``/model <name>``.
+
+        Listed ahead of the provider's models because they are few,
+        hand-created, and the reason the user opened the picker; the
+        provider list can run to dozens of ids.
+        """
+        fusion: list[str] = []
+        try:
+            from src.providers.fusion_models import load_fusion_models
+
+            fusion = [m.name for m in load_fusion_models() if m.enabled]
+        except Exception:  # noqa: BLE001 — a bad record must not empty the picker
+            logger.debug("[agent-server] fusion model listing failed", exc_info=True)
         try:
             fn = getattr(self.provider, "get_available_models", None)
             if callable(fn):
                 models = fn()
-                return [str(m) for m in models] if models else []
+                if models:
+                    return fusion + [str(m) for m in models]
         except Exception:  # noqa: BLE001
             pass
-        return []
+        return fusion
 
     def _emit_agent_progress(self, ev: dict) -> None:
         """Forward a spawned subagent's progress to the client (the original's
@@ -1379,6 +1424,13 @@ class _AgentSession:
         if self.provider is None:
             self._reply(request_id, {"ok": False, "error": "session not ready"})
             return
+        # A fusion model is selected by name like any other model (CCR:
+        # "a Fusion model appears in routing … like a normal model"), but
+        # activating one swaps the whole provider rather than poking
+        # ``.model``: it carries its own base provider + model, and the
+        # vision wrapper has to be installed around it.
+        if self._do_set_fusion_model(request_id, model):
+            return
         if isinstance(provider, str) and provider and provider != self.provider_name:
             self._reply(request_id, {
                 "ok": False,
@@ -1386,8 +1438,40 @@ class _AgentSession:
                          f"session is on '{self.provider_name}'",
             })
             return
+        # Leaving a fusion model for a plain one: drop the wrapper, so the
+        # session stops paying for vision substitution it no longer needs
+        # and ``isinstance(provider, AnthropicProvider)`` checks downstream
+        # see the real provider again.
+        from src.providers.fusion_provider import FusionProvider
+
+        target = self.provider
+        unfusing = isinstance(target, FusionProvider)
+        if unfusing:
+            # Idle-only, exactly like /provider and the fusion branch above:
+            # un-fusing replaces provider AND tool_registry, and the turn
+            # runs on the worker thread while this handler runs on the main
+            # loop — so a mid-turn swap pulls the registry out from under
+            # live tool dispatch. The plain path below is only a ``.model``
+            # assignment, which is why it needs no gate; this branch is not.
+            with self._lock:
+                active = self._current_abort is not None
+            if active:
+                self._reply(request_id, {
+                    "ok": False,
+                    "error": "cannot leave a fusion model during an active turn",
+                })
+                return
         try:
-            self.provider.model = model
+            if unfusing:
+                # Inside the try: _install_provider rebuilds the registry,
+                # re-registers MCP tools, and dispatches app state, any of
+                # which can raise. Escaping here replies NOTHING — on stdio
+                # the client's controlQuery hangs to its RPC timeout, and on
+                # the WS transport it kills the inbound task and drops the
+                # whole connection.
+                self._install_provider(target.inner, self.provider_name, model)
+                target = self.provider
+            target.model = model
         except Exception as exc:  # noqa: BLE001
             self._reply(request_id, {"ok": False, "error": f"model switch failed: {exc}"})
             return
@@ -1404,6 +1488,93 @@ class _AgentSession:
             )
         self._reply(request_id, response)
 
+    def _do_set_fusion_model(self, request_id: object, model: str) -> bool:
+        """Activate ``model`` if it names a fusion model. Returns whether handled.
+
+        Returns True (having replied) when ``model`` matched a saved fusion
+        model — enabled or not — so the caller stops. Returns False when the
+        name is not a fusion model, leaving the plain-model path to run.
+
+        Selecting a fusion model whose base lives on another provider is a
+        genuine cross-provider switch, so this goes through
+        :meth:`_install_provider` — the same rebuild ``/provider`` does —
+        rather than the ``.model`` assignment a same-provider switch needs.
+        """
+        from src.providers.fusion_models import get_fusion_model
+
+        try:
+            fusion = get_fusion_model(model)
+        except Exception:  # noqa: BLE001 — a config problem must not block /model
+            logger.debug("[agent-server] fusion lookup failed", exc_info=True)
+            return False
+        if fusion is None:
+            return False
+        if not fusion.enabled:
+            self._reply(request_id, {
+                "ok": False,
+                "error": f"fusion model '{fusion.name}' is disabled — run "
+                         f"`/fusion enable {fusion.name}` first",
+            })
+            return True
+
+        # Idle-only, matching /provider: the turn runs on the worker thread
+        # while this handler runs on the main loop, so swapping the provider
+        # and tool registry mid-turn would pull them out from under it.
+        with self._lock:
+            active = self._current_abort is not None
+        if active:
+            self._reply(request_id, {
+                "ok": False,
+                "error": "cannot switch to a fusion model during an active turn",
+            })
+            return True
+
+        try:
+            from src.providers import provider_has_credentials, resolve_api_key
+            from src.providers.fusion_provider import build_fusion_provider
+
+            # Check credentials for BOTH halves up front. Without the vision
+            # check the switch succeeds and then every image silently
+            # degrades to a "vision model failed" note — a failure the user
+            # would only discover mid-task.
+            for ref, role in ((fusion.base, "base"), (fusion.vision, "vision")):
+                key = resolve_api_key(ref.provider)
+                if not provider_has_credentials(ref.provider, key):
+                    self._reply(request_id, {
+                        "ok": False,
+                        "error": f"fusion model '{fusion.name}' needs credentials for "
+                                 f"its {role} provider '{ref.provider}' (no API key "
+                                 f"configured)",
+                    })
+                    return True
+
+            fused = build_fusion_provider(fusion)
+            self._install_provider(
+                fused, fusion.base.provider, fusion.base.model,
+                # Persist the NAME the user selected, so a restart restores
+                # the fusion model rather than the bare base model.
+                persist_model=fusion.name,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[agent-server] fusion model switch failed")
+            self._reply(request_id, {
+                "ok": False, "error": f"fusion model switch failed: {exc}",
+            })
+            return True
+
+        self._reply(request_id, {
+            "ok": True,
+            # The fusion NAME is echoed as the switch result: it is what the
+            # user selected and what the client's model line should show.
+            # ``fusion_base`` carries the id actually on the wire.
+            "model": fusion.name,
+            "fusion": fusion.name,
+            "fusion_base": fusion.base.selector,
+            "fusion_vision": fusion.vision.selector,
+            "provider": fusion.base.provider,
+        })
+        return True
+
     def _do_set_provider(self, request_id: object, name: object) -> None:
         """Switch the LLM provider mid-session (the original's /provider). Rebuilds
         the provider + tool registry but keeps the conversation. Idle-only."""
@@ -1418,7 +1589,6 @@ class _AgentSession:
                 return
             from src.config import get_provider_config
             from src.providers import get_provider_class, provider_has_credentials, resolve_api_key
-            from src.tool_system.defaults import build_default_registry
 
             provider_cfg = get_provider_config(name)
             api_key = resolve_api_key(name, provider_cfg)
@@ -1428,57 +1598,86 @@ class _AgentSession:
             provider_cls = get_provider_class(name)
             model = provider_cfg.get("default_model")
             provider = provider_cls(api_key=api_key, base_url=provider_cfg.get("base_url"), model=model)
-            registry = build_default_registry(provider=provider)
-            cfg = self.config
-            # Canonicalize up front so alias-form flags (e.g. KillShell ->
-            # TaskStop) resolve while the tool is still registered.
-            allow = (
-                registry.canonicalize_names(cfg.allowed_tools)
-                if cfg.allowed_tools
-                else None
-            )
-            deny = (
-                registry.canonicalize_names(cfg.disallowed_tools)
-                if cfg.disallowed_tools
-                else None
-            )
-            if allow is not None:
-                _filter_registry(registry, keep=lambda n: n.lower() in allow)
-            if deny is not None:
-                _filter_registry(registry, keep=lambda n: n.lower() not in deny)
-            if self._mcp_runtime is not None:  # keep MCP tools across the switch
-                for mtool in self._mcp_runtime.tools:
-                    try:
-                        registry.register(mtool)
-                    except Exception:  # noqa: BLE001
-                        pass
-            self.provider = provider
-            self.provider_name = name
-            cfg.provider_name = name
-            cfg.model = model
-            self.tool_registry = registry
-            # ch03 round-4 GAP A: keep the persisted (model, model_provider)
-            # pair coherent across a provider switch — the supplier reads
-            # self.provider_name, updated above, so on_change persists the
-            # new pairing.
-            _dispatch_app_state(self, main_loop_model=model)
-            # INTEG-1 warm-on-activation (the refreshStartupDiscoveryForActiveRoute
-            # analog, discoveryService.ts:415): one non-blocking
-            # get_available_models call kicks the single-flight background
-            # refresh at SWITCH time, so the picker's later read sees the
-            # discovered list instead of the static stub. (Server init warms
-            # the initial provider the same way via get_settings →
-            # _available_models.)
-            try:
-                warm = getattr(provider, "get_available_models", None)
-                if callable(warm):
-                    warm()
-            except Exception:  # noqa: BLE001 — warm is best-effort
-                logger.debug("[agent-server] discovery warm failed", exc_info=True)
+            self._install_provider(provider, name, model)
             self._reply(request_id, {"ok": True, "provider": name, "model": model or ""})
         except Exception as exc:  # noqa: BLE001
             logger.exception("[agent-server] set_provider failed")
             self._reply(request_id, {"ok": False, "error": str(exc)})
+
+    def _install_provider(
+        self, provider: Any, name: str, model: str | None,
+        *, persist_model: str | None = None,
+    ) -> None:
+        """Adopt ``provider`` as the session's provider, rebuilding the registry.
+
+        Extracted from :meth:`_do_set_provider` so the fusion-model branch of
+        :meth:`_do_set_model` performs an IDENTICAL swap — a fusion model
+        carries its own base provider, so selecting one can be a
+        cross-provider switch, and re-deriving these steps separately is how
+        the two paths would drift (a missed MCP re-register or app-state
+        dispatch is silent).
+
+        ``model`` is the id to record as current; for a fusion model that is
+        the base model, since that is what serves the turn (see
+        ``FusionProvider.model``).
+
+        ``persist_model`` is what gets PERSISTED as the user's choice, when
+        it differs from ``model``. For a fusion model that is the fusion
+        NAME: persisting the base id instead would restore the next session
+        as the plain base model and silently drop vision — the user picked
+        ``deepseek-v4-pro-V``, not ``deepseek-v4-pro``. The restore side
+        (``settings.get_persisted_model``) resolves that name back to the
+        fusion record.
+        """
+        from src.tool_system.defaults import build_default_registry
+
+        registry = build_default_registry(provider=provider)
+        cfg = self.config
+        # Canonicalize up front so alias-form flags (e.g. KillShell ->
+        # TaskStop) resolve while the tool is still registered.
+        allow = (
+            registry.canonicalize_names(cfg.allowed_tools)
+            if cfg.allowed_tools
+            else None
+        )
+        deny = (
+            registry.canonicalize_names(cfg.disallowed_tools)
+            if cfg.disallowed_tools
+            else None
+        )
+        if allow is not None:
+            _filter_registry(registry, keep=lambda n: n.lower() in allow)
+        if deny is not None:
+            _filter_registry(registry, keep=lambda n: n.lower() not in deny)
+        if self._mcp_runtime is not None:  # keep MCP tools across the switch
+            for mtool in self._mcp_runtime.tools:
+                try:
+                    registry.register(mtool)
+                except Exception:  # noqa: BLE001
+                    pass
+        self.provider = provider
+        self.provider_name = name
+        cfg.provider_name = name
+        cfg.model = model
+        self.tool_registry = registry
+        # ch03 round-4 GAP A: keep the persisted (model, model_provider)
+        # pair coherent across a provider switch — the supplier reads
+        # self.provider_name, updated above, so on_change persists the
+        # new pairing.
+        _dispatch_app_state(self, main_loop_model=persist_model or model)
+        # INTEG-1 warm-on-activation (the refreshStartupDiscoveryForActiveRoute
+        # analog, discoveryService.ts:415): one non-blocking
+        # get_available_models call kicks the single-flight background
+        # refresh at SWITCH time, so the picker's later read sees the
+        # discovered list instead of the static stub. (Server init warms
+        # the initial provider the same way via get_settings →
+        # _available_models.)
+        try:
+            warm = getattr(provider, "get_available_models", None)
+            if callable(warm):
+                warm()
+        except Exception:  # noqa: BLE001 — warm is best-effort
+            logger.debug("[agent-server] discovery warm failed", exc_info=True)
 
     def _mcp_server_infos(self) -> list[Any] | None:
         """The connected MCP servers' info objects (name + instructions) for
@@ -3204,6 +3403,53 @@ class _AgentSession:
             logger.exception("[agent-server] advisor command failed")
             self._reply(request_id, {"ok": False, "error": str(exc)})
 
+    def _do_fusion_command(self, request_id: object, arg: object) -> None:
+        """Control handler for /fusion — manage fusion models.
+
+        Bridges to the command-system implementation
+        (``fusion_command.fusion_command_call``), which owns the grammar
+        (list / create / delete / enable / disable / help).
+
+        ``single_session``-gated for the same reason as /advisor: fusion
+        models are persisted USER-level config (``~/.clawcodex/config.json``
+        → ``fusionModels``), so on the multi-session WS transport one
+        client's ``/fusion delete`` would remove a model out from under
+        every other session on the host.
+
+        Reply shape mirrors /advisor: transport-level ``ok`` is True
+        whenever the command ran, and command-level rejections (bad
+        selector, unknown name, duplicate) ride ``text``.
+        """
+        if not self.config.single_session:
+            self._reply(request_id, {
+                "ok": False,
+                "error": "/fusion is only available on single-session "
+                         "(stdio) transports — it persists user-level "
+                         "settings.",
+            })
+            return
+        try:
+            from src.command_system.fusion_command import fusion_command_call
+            from src.command_system.types import CommandContext
+
+            ctx = CommandContext(
+                workspace_root=Path(self.cwd),
+                cwd=Path(self.cwd),
+                conversation=getattr(self.session, "conversation", None),
+                cost_tracker=None,
+                history=None,
+                app_state_store=None,
+                provider=self.provider,
+            )
+            result = fusion_command_call(str(arg or ""), ctx)
+            self._reply(request_id, {
+                "ok": True,
+                "text": str(getattr(result, "value", "") or ""),
+            })
+        except Exception as exc:  # noqa: BLE001 — must not kill the control channel
+            logger.exception("[agent-server] fusion command failed")
+            self._reply(request_id, {"ok": False, "error": str(exc)})
+
     def _maybe_continue_goal(self, outcome: dict | None) -> None:
         """Post-turn goal hook (worker thread) — the port of hermes
         tui_gateway's "/goal continuation" block and the observable behavior
@@ -4513,21 +4759,94 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
             logger.debug("[agent-server] sandbox hard-gate check failed", exc_info=True)
 
         provider_name = cfg.provider_name or get_default_provider()
+
+        # Model precedence, mirroring TS ``main.tsx:1984``
+        # (``userSpecifiedModel ?? getUserSpecifiedModelSetting() ?? null``):
+        # an explicit --model wins, then the persisted /model choice, then
+        # the provider default (applied below). Without the middle term a
+        # /model switch never survived a restart — the write side has always
+        # persisted (model, model_provider); nothing ever read it back.
+        from src.settings.settings import get_persisted_model
+
+        #
+        # single_session ONLY, deliberately. The persisted choice lives in
+        # the HOST's user settings, and the old post-construction restore
+        # sat inside the ``if cfg.single_session:`` block below — so reading
+        # it here unguarded would newly apply the server operator's model to
+        # every client session on the multi-session --http transport. Same
+        # shape as the bypass-availability refusal further down ("would let
+        # the server host's own settings unlock bypass for every client
+        # session"); milder consequence, but a scope change should be a
+        # decision rather than a side effect of moving the read earlier.
+        model_choice = cfg.model or (
+            get_persisted_model(
+                provider_name, provider_is_explicit=bool(cfg.provider_name)
+            )
+            if cfg.single_session
+            else ""
+        )
+
+        # ``model_choice`` may name a FUSION model, which is not a real model
+        # id on any provider: handing it to the provider constructor would
+        # put it on the wire and 400. Resolved BEFORE the credential gate
+        # below, because a fusion model overrides the session's provider —
+        # gating on the session default first would refuse to start when that
+        # unrelated provider happens to be unconfigured, even though the
+        # fusion model's own providers are fine.
+        fusion = None
+        try:
+            from src.providers.fusion_models import get_fusion_model
+
+            candidate = get_fusion_model(model_choice) if model_choice else None
+            fusion = candidate if (candidate and candidate.enabled) else None
+        except Exception:  # noqa: BLE001 — never block startup on this
+            logger.debug("[agent-server] fusion lookup at init failed", exc_info=True)
+
+        if fusion is not None:
+            # Selecting a fusion model IS a provider choice: its record
+            # names the base provider, which replaces the session's.
+            provider_name = fusion.base.provider
+
         provider_cfg = get_provider_config(provider_name)
         api_key = resolve_api_key(provider_name, provider_cfg)
         if not provider_has_credentials(provider_name, api_key):
             sess.init_error = (
+                f"fusion model '{fusion.name}' needs credentials for its base "
+                f"provider '{provider_name}'. Run `clawcodex login` to set it up."
+                if fusion is not None else
                 f"API key for provider '{provider_name}' is not configured. "
                 "Run `clawcodex login` to set it up."
             )
             sess.provider_name = provider_name
             return
 
-        provider_cls = get_provider_class(provider_name)
-        model = cfg.model or provider_cfg.get("default_model")
-        provider = provider_cls(
-            api_key=api_key, base_url=provider_cfg.get("base_url"), model=model
-        )
+        if fusion is not None:
+            from src.providers.fusion_provider import build_fusion_provider
+
+            # The VISION half is credential-checked too — the same check
+            # /model and headless perform. Starting fused is the primary
+            # entry point, so it must not be the one that skips it: without
+            # this the session starts and then every image degrades to a
+            # "vision model failed" note, discovered mid-task.
+            vision_ref = fusion.vision
+            vision_cfg = get_provider_config(vision_ref.provider)
+            if not provider_has_credentials(
+                vision_ref.provider, resolve_api_key(vision_ref.provider, vision_cfg)
+            ):
+                sess.init_error = (
+                    f"fusion model '{fusion.name}' needs credentials for its vision "
+                    f"provider '{vision_ref.provider}'. Run `clawcodex login` to set it up."
+                )
+                sess.provider_name = provider_name
+                return
+            model = fusion.base.model
+            provider = build_fusion_provider(fusion)
+        else:
+            provider_cls = get_provider_class(provider_name)
+            model = model_choice or provider_cfg.get("default_model")
+            provider = provider_cls(
+                api_key=api_key, base_url=provider_cfg.get("base_url"), model=model
+            )
         profile_checkpoint("agent_server_provider_ready")
 
         # (ch03 round-4 GAP A: the per-session AppState store is created
@@ -4612,15 +4931,14 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
         # ch03 round-4 GAP A — re-home the two-tier bridge: a per-session
         # AppState store whose on_change router runs the centralized side
         # effects (bootstrap model mirror + user-settings persistence).
-        # The seed applies a persisted /model choice back to the provider
-        # under seed_app_state_from_settings' provider-match guard — an
-        # explicit model (CLI/client cfg.model) always wins. The initial
-        # state carries the session's real launch permission mode (critic
-        # n5: seeding the default then dispatching the true mode would
-        # fire a spurious first mode-change notification). Gated
-        # single_session (same rule as ch02's env apply): user-level
-        # settings writes must not fire from client-supplied --http
-        # sessions.
+        # The persisted /model choice is applied ABOVE, pre-construction,
+        # via ``model_choice``; the seed no longer writes to the provider
+        # (see the note where the store is built). The initial state
+        # carries the session's real launch permission mode (critic n5:
+        # seeding the default then dispatching the true mode would fire a
+        # spurious first mode-change notification). Gated single_session
+        # (same rule as ch02's env apply): user-level settings writes must
+        # not fire from client-supplied --http sessions.
         if cfg.single_session:
             try:
                 from src.state.app_state import (
@@ -4631,13 +4949,26 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
                 )
 
                 set_active_provider_supplier(lambda: sess.provider_name)
+                # The persisted-model restore now happens ONCE, above, via
+                # ``model_choice`` — before construction, because a fusion
+                # name decides which provider gets built at all. The old
+                # post-construction ``provider.model = main_loop_model``
+                # assignment is therefore gone, not merely guarded: it read
+                # ``settings.model`` RAW, so a persisted fusion name that
+                # ``get_persisted_model`` had correctly declined (disabled,
+                # or not matching an explicit --provider) would still be
+                # assigned here and reach the wire as a bogus model id.
+                # One rule, one place.
+                #
+                # The store's ``main_loop_model`` is likewise pinned to the
+                # resolution actually in force, so the state the client reads
+                # cannot disagree with the provider that was built.
                 seeded_state = replace_state(
                     seed_app_state_from_settings(provider_name),
                     permission_mode=mode,
+                    main_loop_model=(fusion.name if fusion is not None else model),
                 )
                 sess.app_state_store = create_app_state_store(seeded_state)
-                if cfg.model is None and seeded_state.main_loop_model:
-                    provider.model = seeded_state.main_loop_model
             except Exception:  # noqa: BLE001 — store failure must not break startup
                 logger.debug("[agent-server] app-state store init failed",
                              exc_info=True)

@@ -324,6 +324,27 @@ def is_anthropic_wire(provider: Any) -> bool:
     return isinstance(provider, (AnthropicProvider, MinimaxProvider))
 
 
+#: The provider ids whose classes :func:`is_anthropic_wire` matches. Kept
+#: adjacent to it so the name-based and instance-based tests cannot drift:
+#: adding an Anthropic-shaped provider means updating both.
+_ANTHROPIC_WIRE_PROVIDERS: frozenset[str] = frozenset({"anthropic", "minimax"})
+
+
+def provider_name_is_anthropic_wire(provider_name: str) -> bool:
+    """Whether the provider *named* ``provider_name`` speaks the Anthropic shape.
+
+    The by-name counterpart to :func:`is_anthropic_wire`, for callers that
+    must decide before any provider instance exists — validating a
+    user-typed ``provider:model`` selector, for one (see
+    ``providers/fusion_models.py``). Accepts legacy aliases.
+
+    Prefer :func:`is_anthropic_wire` whenever an instance is in hand: the
+    class carries the wire contract, and a name cannot see that a provider
+    was constructed with a custom endpoint.
+    """
+    return _canonical_provider_name(provider_name) in _ANTHROPIC_WIRE_PROVIDERS
+
+
 def provider_requires_api_key(provider_name: str) -> bool:
     """Whether a provider needs an API key.
 
@@ -411,6 +432,7 @@ __all__ = [
     "canonical_provider_name",
     "provider_env_vars",
     "provider_has_credentials",
+    "provider_name_is_anthropic_wire",
     "provider_requires_api_key",
     "resolve_api_key",
     "PROVIDER_INFO",
