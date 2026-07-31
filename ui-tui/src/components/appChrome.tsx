@@ -6,7 +6,7 @@ import unicodeSpinners from 'unicode-animations'
 import { $delegationState } from '../app/delegationStore.js'
 import type { IndicatorStyle, Notice } from '../app/interfaces.js'
 import { useTurnSelector } from '../app/turnStore.js'
-import { DEV_CREDITS_MODE } from '../config/env.js'
+import { DEV_CREDITS_MODE, INLINE_MODE } from '../config/env.js'
 import { FACES } from '../content/faces.js'
 import { VERBS } from '../content/verbs.js'
 import { fmtDuration } from '../domain/messages.js'
@@ -723,7 +723,28 @@ export function TranscriptScrollbar({ scrollRef, t }: TranscriptScrollbarProps) 
   const grabRef = useRef<number | null>(null)
   const { scrollHeight: total, top: pos, viewportHeight: vp } = useScrollbarSnapshot(scrollRef)
 
-  if (!vp) {
+  // Inline mode renders no scrollbar, and MUST NOT render a tall one.
+  //
+  // `vp` is last frame's scrollViewportHeight (render-node-to-output writes it
+  // at paint time), and the bar below is exactly `vp` rows tall. It is a row
+  // sibling of the transcript ScrollBox, and that row stretches its children to
+  // the tallest one — so a stale-tall bar stretches the ScrollBox, whose inner
+  // wrapper (flexGrow:1) then fills the extra with blank rows. The stretched
+  // height becomes the next frame's scrollViewportHeight, which re-renders the
+  // bar at that same height: a stable fixed point, not a transient.
+  //
+  // That is what blanked the transcript on resize. Widening the terminal
+  // re-wraps every row shorter (measured 161 → 102 rows at 60 → 110 columns),
+  // but the bar held the ScrollBox at 161, and the ~59 blank rows pushed the
+  // transcript above the terminal viewport — where the resize repaint's
+  // ERASE_SCROLLBACK then wiped it from scrollback.
+  //
+  // Inline mode has no constrained-height root, so the ScrollBox always sizes
+  // to its content and `total <= vp` holds: the bar would take the !scrollable
+  // branch and paint a column of spaces. It is invisible there and contributes
+  // nothing but height. Keep the 1-column gutter so transcriptPanelWidth's
+  // reservation still matches what we draw.
+  if (!vp || INLINE_MODE) {
     return <Box width={1} />
   }
 

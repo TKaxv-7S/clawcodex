@@ -189,6 +189,11 @@ export function useVirtualHistory(
   // key → React.Object.is short-circuits the commit entirely. The key includes
   // sticky state, target scroll position, and viewport height so resize-only
   // changes still recompute the mounted transcript window.
+  // Stable deps are only safe because the transcript ScrollBox never remounts:
+  // useImperativeHandle(..., []) builds a NEW listenersRef Set per mount, and
+  // this subscribe identity never changes, so React would never resubscribe —
+  // the listeners would stay on the dead handle. Anything that makes a
+  // ScrollBox handle identity change must add a handle version to these deps.
   const subscribe = useCallback(
     (cb: () => void) => (hasScrollRef ? scrollRef.current?.subscribe(cb) : null) ?? NOOP,
     [hasScrollRef, scrollRef]
