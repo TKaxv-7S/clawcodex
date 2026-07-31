@@ -390,10 +390,48 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
     # entries so they never take that path. As with the Meta entry above,
     # max_output_tokens is not sent on the wire for OpenAI providers — its
     # live effect is the auto-compact output reservation (clamped at 20K).
+    # GPT-5.6 (Sol / Terra / Luna — three durable capability tiers on one
+    # generation, 1.05M context each). These keys sit BEFORE "gpt-5.5"
+    # deliberately: ``get_model_config``'s prefix fallback walks in insertion
+    # order and each of these has base "gpt-5.6" (rsplit on the last "-"), so
+    # putting them first is what lets an unlisted variant like
+    # ``gpt-5.6-sol-pro`` resolve to 1.05M instead of falling through to the
+    # 272K catch-all. The bare ``gpt-5.6`` alias is deliberately NOT here —
+    # see below.
+    "gpt-5.6-sol": ModelConfig(
+        model_id="gpt-5.6-sol",
+        display_name="GPT-5.6 Sol",
+        context_window=1_048_576,
+        max_output_tokens=128_000,
+    ),
+    "gpt-5.6-terra": ModelConfig(
+        model_id="gpt-5.6-terra",
+        display_name="GPT-5.6 Terra",
+        context_window=1_048_576,
+        max_output_tokens=128_000,
+    ),
+    "gpt-5.6-luna": ModelConfig(
+        model_id="gpt-5.6-luna",
+        display_name="GPT-5.6 Luna",
+        context_window=1_048_576,
+        max_output_tokens=128_000,
+    ),
     "gpt-5.5": ModelConfig(
         model_id="gpt-5.5",
         display_name="GPT-5.5",
         context_window=272_000,
+        max_output_tokens=128_000,
+    ),
+    # ``gpt-5.6`` is OpenAI's alias for Sol. Its base is "gpt" (not
+    # "gpt-5.6"), so it would become the catch-all for EVERY unknown gpt id if
+    # it preceded "gpt-5.5" — handing them a 1.05M window. Over-estimating
+    # overflows the context; under-estimating only compacts early, so the
+    # catch-all must stay on the 272K entry. Exact lookups are unaffected by
+    # position: ``get_model_config`` checks for an exact key first.
+    "gpt-5.6": ModelConfig(
+        model_id="gpt-5.6",
+        display_name="GPT-5.6 (Sol)",
+        context_window=1_048_576,
         max_output_tokens=128_000,
     ),
     "gpt-5.4": ModelConfig(
