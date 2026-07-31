@@ -142,14 +142,32 @@ describe('fusion models', () => {
 
   // ── /model interaction ────────────────────────────────────────────────────
 
+  // model.options now asks `list_model_providers` (the picker lists every
+  // provider, not just the active one). The fusion contract is unchanged: the
+  // reply carries the base id in `model` and the fusion name separately, and
+  // the picker's "current" marker must follow the fusion name.
+  const FUSED_CATALOG = {
+    ok: true,
+    provider: 'deepseek',
+    providers: [
+      {
+        authenticated: true,
+        is_current: true,
+        models: ['dsv', 'deepseek-v4-pro'],
+        name: 'DeepSeek',
+        slug: 'deepseek',
+        total_models: 2
+      }
+    ]
+  }
+
   it('marks the fusion model as current in the /model picker', async () => {
     const p = gw.request('model.options', {})
 
-    await replyToControl('get_settings', {
-      available_models: ['dsv', 'deepseek-v4-pro'],
+    await replyToControl('list_model_providers', {
+      ...FUSED_CATALOG,
       fusion: 'dsv',
-      model: 'deepseek-v4-pro',
-      provider: 'deepseek'
+      model: 'deepseek-v4-pro'
     })
     // Must point at the fusion entry the user selected, not the base row.
     await expect(p).resolves.toMatchObject({ model: 'dsv' })
@@ -158,13 +176,48 @@ describe('fusion models', () => {
   it('leaves the picker on the plain model when not fused', async () => {
     const p = gw.request('model.options', {})
 
-    await replyToControl('get_settings', {
-      available_models: ['deepseek-v4-pro'],
+    await replyToControl('list_model_providers', {
+      ...FUSED_CATALOG,
       fusion: '',
-      model: 'deepseek-v4-pro',
-      provider: 'deepseek'
+      model: 'deepseek-v4-pro'
     })
     await expect(p).resolves.toMatchObject({ model: 'deepseek-v4-pro' })
+  })
+
+  it('keeps the fusion marker on the get_settings fallback path', async () => {
+    // An old backend that does not know list_model_providers answers null;
+    // the synthesized single-provider row must still resolve the fusion name.
+    vi.useFakeTimers()
+
+    try {
+      const p = gw.request('model.options', {})
+      await vi.waitFor(() => {
+        seen.push(...stdinFrames())
+        expect(seen.find(f => f.request?.subtype === 'list_model_providers')).toBeTruthy()
+      })
+      await vi.advanceTimersByTimeAsync(5_100)
+      await vi.waitFor(() => {
+        seen.push(...stdinFrames())
+        expect(seen.find(f => f.request?.subtype === 'get_settings')).toBeTruthy()
+      })
+      const req = seen.find(f => f.request?.subtype === 'get_settings')!
+      proc.line({
+        response: {
+          request_id: req.request_id,
+          response: {
+            available_models: ['dsv', 'deepseek-v4-pro'],
+            fusion: 'dsv',
+            model: 'deepseek-v4-pro',
+            provider: 'deepseek'
+          }
+        },
+        type: 'control_response'
+      })
+
+      await expect(p).resolves.toMatchObject({ model: 'dsv' })
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('reports a refused /model switch instead of claiming success', async () => {
