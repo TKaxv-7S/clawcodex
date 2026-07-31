@@ -85,6 +85,11 @@ export function scrollbarSnapshotKey(v: ScrollbarSnapshot) {
 }
 
 export function useViewportSnapshot(scrollRef: RefObject<ScrollBoxHandle | null>): ViewportSnapshot {
+  // Stable deps are only safe because the transcript ScrollBox never remounts:
+  // useImperativeHandle(..., []) builds a NEW listenersRef Set per mount, and
+  // this subscribe identity never changes, so React would never resubscribe —
+  // the listeners would stay on the dead handle. Anything that makes a
+  // ScrollBox handle identity change must add a handle version to these deps.
   const key = useSyncExternalStore(
     useCallback((cb: () => void) => scrollRef.current?.subscribe(cb) ?? (() => {}), [scrollRef]),
     () => viewportSnapshotKey(getViewportSnapshot(scrollRef.current)),
@@ -106,6 +111,11 @@ export function useViewportSnapshot(scrollRef: RefObject<ScrollBoxHandle | null>
 }
 
 export function useScrollbarSnapshot(scrollRef: RefObject<ScrollBoxHandle | null>): ScrollbarSnapshot {
+  // Stable deps are only safe because the transcript ScrollBox never remounts:
+  // useImperativeHandle(..., []) builds a NEW listenersRef Set per mount, and
+  // this subscribe identity never changes, so React would never resubscribe —
+  // the listeners would stay on the dead handle. Anything that makes a
+  // ScrollBox handle identity change must add a handle version to these deps.
   const key = useSyncExternalStore(
     useCallback((cb: () => void) => scrollRef.current?.subscribe(cb) ?? (() => {}), [scrollRef]),
     () => scrollbarSnapshotKey(getScrollbarSnapshot(scrollRef.current)),
