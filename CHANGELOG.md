@@ -7,6 +7,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Fusion models — give a text-only model vision.** Some strong reasoning
+  models cannot see images at all: `deepseek-v4-pro` rejects any image content
+  block outright (`400 unknown variant \`image_url\`, expected \`text\``), so
+  pasting a screenshot, `@`-mentioning an image, or letting `Read` return one
+  ended the turn. A *fusion model* pairs that base model with a second,
+  vision-capable one: every image is sent to the vision model first, and its
+  description is what the base model reads.
+
+  ```
+  /fusion create deepseek-v4-pro-V deepseek:deepseek-v4-pro openrouter:google/gemini-2.5-flash
+  /model deepseek-v4-pro-V
+  ```
+
+  Ported from [claude-code-router]'s Fusion Model concept, keeping its
+  `new model = base model + capability` shape and its create/save/manage
+  lifecycle. One deliberate difference: CCR is a proxy, so it can only offer
+  vision as a tool the model may choose to call — which cannot help a *pasted*
+  image, already on the wire before the model gets a turn. clawcodex owns the
+  agent loop, so it does what CCR's docs describe directly, substituting images
+  in place. Every entry point is covered at once: paste, `@file.png`, `Read` on
+  an image, and `Bash` image output.
+
+  - `/fusion` lists, creates, deletes, and enables/disables saved models; they
+    are stored in `~/.clawcodex/config.json` under `fusionModels` (user-level
+    only, so a checked-out repo cannot redirect where your screenshots go).
+  - A saved fusion model behaves like a normal model: it appears in the
+    `/model` picker, works as `--model <name>` interactively and in `-p`, and
+    **survives a restart** — selecting one persists the fusion *name*, and
+    startup resolves it back to the pair. Deleting or disabling a fusion
+    model that was the persisted choice falls back to the provider default
+    instead of leaving a dangling name on the wire.
+  - Each distinct image is described once per session, so replayed history
+    does not re-pay for the same screenshot. Vision failures degrade to a note
+    naming the cause rather than killing the turn.
+  - Requires the vision half to actually support images. Notably `glm-5.2` does
+    **not** — Z.ai's vision models are the separate `*v` family (`glm-4.5v`,
+    `glm-5v-turbo`), which is what CCR's own `GLM-5.2 + GLM-5V-Turbo` example
+    refers to. `deepseek-v4-pro`, `deepseek-v4-flash`, `glm-5.2`, and `glm-5.1`
+    are now marked vision-less in the model table.
+
+  [claude-code-router]: https://ccrdesk.top/en/configuration/fusion-models/
+
+### Fixed
+
+- **`--model`/`/model` selection is now resolved from one rule at every
+  entrypoint.** The persisted `/model` choice was applied only in the
+  interactive agent-server, and only *after* the provider was constructed
+  (`_build_runtime`'s post-construction `provider.model = ...`). Headless
+  (`-p`) ignored it entirely, so a `/model` switch had to be re-stated with
+  `--model` on every subsequent run. Both entrypoints now share
+  `settings.get_persisted_model` and TS's precedence — explicit `--model`,
+  then the persisted choice, then the provider default
+  (`main.tsx:1984`: `userSpecifiedModel ?? getUserSpecifiedModelSetting() ?? null`)
+  — resolved *before* construction, which is also what lets a persisted
+  fusion model decide which provider to build. The cross-provider staleness
+  guard (`settings.model_provider` must match) is unchanged; a fusion model
+  is exempt because its record names its own provider.
+
+  `apply_persisted_model` (post-construction, no callers) is replaced by
+  `get_persisted_model`.
+
 ### Changed
 
 - **Permissions are now loose by default and easy to change.** `/mode` is

@@ -33,14 +33,27 @@ class _StubSession:
     picker contract instead of the WebSocket harness.
     """
 
-    def __init__(self, provider_name: str = "anthropic", models=None):
+    def __init__(self, provider_name: str = "anthropic", models=None, fusion=None):
         self.provider_name = provider_name
         self.provider = SimpleNamespace(model="claude-opus-5")
         self._models = list(models or [])
+        self._fusion = fusion
         self.replies: list[tuple[object, dict]] = []
 
     def _available_models(self) -> list[str]:
         return list(self._models)
+
+    def _active_fusion_name(self) -> str | None:
+        """The picker marks the fusion entry current rather than its base
+        model, so the control reports this alongside ``model`` exactly as
+        ``get_settings`` does."""
+        return self._fusion
+
+    def _do_set_fusion_model(self, request_id: object, model: object) -> bool:
+        """Not a fusion model, so _do_set_model falls through to the ordinary
+        provider-compare path these tests exercise. Selecting a fusion model
+        is its own control flow with its own coverage."""
+        return False
 
     def _reply(self, request_id: object, payload: dict) -> None:
         self.replies.append((request_id, payload))
@@ -215,6 +228,16 @@ class TestListModelProvidersControl:
         assert reply["provider"] == "anthropic"
         assert reply["model"] == "claude-opus-5"
         assert len(reply["providers"]) == len(PROVIDER_INFO) > 1
+
+    def test_reports_the_active_fusion_name_so_the_picker_marks_the_right_row(self):
+        """On a fused session ``model`` is the BASE id that serves the turn, so
+        without this channel the picker's `*` would land on the base model row
+        instead of the fusion entry the user selected."""
+        sess = _StubSession("deepseek", models=["deepseek-v4-pro"], fusion="deepseek-v4-pro-V")
+        _AgentSession._do_list_model_providers(sess, "r1")
+
+        assert sess.last["fusion"] == "deepseek-v4-pro-V"
+        assert sess.last["model"] == "claude-opus-5"
 
     def test_catalog_failure_reports_an_error_rather_than_crashing(self, monkeypatch):
         monkeypatch.setattr(

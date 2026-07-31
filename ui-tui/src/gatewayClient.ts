@@ -476,6 +476,11 @@ const SLASHES: ReadonlyArray<{ desc: string; hint?: string; name: string }> = [
     hint: '[<provider>:<model> [--client] | --no-client | off|unset]',
     name: '/advisor'
   },
+  {
+    desc: 'Give a text-only model vision by fusing it with a multimodal one',
+    hint: '[list | create <name> <base> <vision> | delete|enable|disable <name>]',
+    name: '/fusion'
+  },
   { desc: 'List running and recent dynamic workflows', name: '/workflows' },
   { desc: 'Search / manage the knowledge base', hint: '[status|list|clear|enable|disable]', name: '/knowledge' },
   {
@@ -808,7 +813,14 @@ export class GatewayClient extends EventEmitter {
           const providers = Array.isArray(r?.providers) ? r.providers : []
 
           if (providers.length) {
-            return { model: r?.model, provider: r?.provider, providers } as T
+            return {
+              // On a fused session the backend reports `model` as the base id;
+              // the picker's "current" marker must point at the fusion entry
+              // the user actually selected, not at the base model row.
+              model: typeof r?.fusion === 'string' && r.fusion ? r.fusion : r?.model,
+              provider: r?.provider,
+              providers
+            } as T
           }
 
           // An explicit refusal is real information — most importantly the
@@ -831,7 +843,8 @@ export class GatewayClient extends EventEmitter {
             const provider = String(s?.provider ?? 'clawcodex')
 
             return {
-              model: s?.model,
+              // Same fusion rule as the catalog path above.
+              model: typeof s?.fusion === 'string' && s.fusion ? s.fusion : s?.model,
               provider,
               providers: [
                 {
@@ -1366,6 +1379,17 @@ export class GatewayClient extends EventEmitter {
 
         return out(String(r.text ?? r.error ?? 'advisor: no response'))
       }
+      case 'fusion': {
+        // Manage fusion models (a text-only base model + a borrowed vision
+        // model). The backend owns the whole grammar — list / create /
+        // delete / enable / disable — so this only relays the arg and
+        // prints the reply, exactly like /advisor above.
+        const r = (await this.controlQuery('fusion', { arg: arg ?? '' })) as any
+
+        if (!r || Object.keys(r).length === 0) {return out('fusion: backend not ready')}
+
+        return out(String(r.text ?? r.error ?? 'fusion: no response'))
+      }
       case 'memory': {
         // Arg-ful /memory (status | pending | approve | reject) — the
         // bounded-store management surface. The no-arg picker never routes
@@ -1467,10 +1491,26 @@ export class GatewayClient extends EventEmitter {
       // registry first and returns, so a gateway case here would be unreachable.
       // The RPC it uses is `config.set{key:'permission_mode'}` above.
 
-      case 'model':
-        await this.controlQuery('set_model', { model: arg })
+      case 'model': {
+        const r = (await this.controlQuery('set_model', { model: arg })) as any
 
-        return out(`Model set to ${arg ?? '(unchanged)'}.`)
+        // DEFENCE-IN-DEPTH, not the reachable path: like /permissions above,
+        // `/model` is a TUI-local command (app/slash/commands/session.ts) and
+        // createSlashHandler resolves the local registry first, so the live
+        // route is config.set → setModel — which already throws on
+        // `ok === false` and already patches the badge from `r.value`. This
+        // case only runs if that local command is ever removed. Kept correct
+        // anyway because set_model can now decline for several actionable
+        // reasons (a disabled fusion model, missing credentials for a fusion
+        // half, an active turn), each carrying the fix in its message.
+        if (r?.ok === false) {
+          return out(String(r.error ?? 'model switch failed'))
+        }
+
+        const applied = typeof r?.model === 'string' && r.model ? r.model : (arg ?? '(unchanged)')
+
+        return out(`Model set to ${applied}.${r?.warning ? ` ${r.warning}` : ''}`)
+      }
       case 'output-style': {
         if (arg) {
           const r = (await this.controlQuery('set_output_style', { style: arg })) as any
@@ -2294,9 +2334,18 @@ export class GatewayClient extends EventEmitter {
       ? init.tools.map((t: any) => t?.name).filter(Boolean)
       : []
 
+    // A fused session reports `model` as the BASE model id (what serves the
+    // turn, and what the backend's cost/context-window lookups key off) and
+    // the fusion model's name separately. The name is what the user selected
+    // and the only signal that images are being routed through a second
+    // model, so it is what the model line shows — matching CCR's contract
+    // that a fusion model behaves "like a normal model". `/fusion list`
+    // remains the place to see which two models it is made of.
+    const fusion = typeof init.fusion === 'string' ? init.fusion : ''
+
     return {
       cwd: init.cwd,
-      model: String(init.model ?? ''),
+      model: fusion || String(init.model ?? ''),
       permission_mode: typeof init.permission_mode === 'string' ? init.permission_mode : undefined,
       profile_name: init.provider ? String(init.provider) : undefined,
       // Rendered beside the model name; the backend sends the session's
