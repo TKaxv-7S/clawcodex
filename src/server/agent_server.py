@@ -508,6 +508,17 @@ class _AgentSession:
         if subtype == "set_provider":
             self._do_set_provider(request_id, inner.get("provider"))
             return
+        if subtype == "list_model_providers":
+            self._do_list_model_providers(request_id)
+            return
+        if subtype == "save_provider_key":
+            self._do_save_provider_key(
+                request_id, inner.get("slug"), inner.get("api_key")
+            )
+            return
+        if subtype == "disconnect_provider":
+            self._do_disconnect_provider(request_id, inner.get("slug"))
+            return
         if subtype == "set_output_style":
             self._do_set_output_style(request_id, inner.get("style"))
             return
@@ -1379,9 +1390,29 @@ class _AgentSession:
         if self.provider is None:
             self._reply(request_id, {"ok": False, "error": "session not ready"})
             return
-        if isinstance(provider, str) and provider and provider != self.provider_name:
+        # Canonicalized on BOTH sides: a session launched as ``--provider glm``
+        # keeps that spelling in ``provider_name`` while the picker's rows
+        # carry the canonical ``zai``, so a raw string compare would refuse a
+        # same-provider switch and then send the client off to "switch" to a
+        # provider it is already on.
+        from src.providers import canonical_provider_name as _canonical
+
+        if (
+            isinstance(provider, str)
+            and provider
+            and _canonical(provider) != _canonical(self.provider_name or "")
+        ):
+            # ``provider_mismatch`` is the machine-readable half of this
+            # refusal: the /model picker legitimately selects a model from
+            # another provider (step 1 picks the provider, step 2 the model),
+            # and its client re-drives the switch through ``set_provider``
+            # — which does the registry rebuild this handler deliberately
+            # will not — before re-applying the model. Without the flag the
+            # client would have to pattern-match the error prose.
             self._reply(request_id, {
                 "ok": False,
+                "provider_mismatch": True,
+                "provider": self.provider_name,
                 "error": f"model '{model}' expects provider '{provider}' but this "
                          f"session is on '{self.provider_name}'",
             })
@@ -1479,6 +1510,298 @@ class _AgentSession:
         except Exception as exc:  # noqa: BLE001
             logger.exception("[agent-server] set_provider failed")
             self._reply(request_id, {"ok": False, "error": str(exc)})
+
+    def _do_list_model_providers(self, request_id: object) -> None:
+        """Every provider ClawCodex knows about — the /model picker's step 1.
+
+        ``get_settings`` reports only the ACTIVE provider, so a picker built on
+        it can only ever render one row (the bug this fixes: the list showed
+        `anthropic · 22 models` and nothing else). The catalog enumerates the
+        real registry instead, and the active provider's row carries this
+        session's live model list so endpoint-discovered catalogues show their
+        real models.
+        """
+        try:
+            from src.providers.catalog import provider_catalog
+
+            providers = provider_catalog(
+                current=self.provider_name,
+                current_models=self._available_models(),
+                current_ready=self.provider is not None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[agent-server] list_model_providers failed")
+            self._reply(request_id, {"ok": False, "error": str(exc), "providers": []})
+            return
+        self._reply(request_id, {
+            "ok": True,
+            "model": getattr(self.provider, "model", None),
+            "provider": self.provider_name,
+            "providers": providers,
+        })
+
+    def _do_save_provider_key(
+        self, request_id: object, slug: object, api_key: object
+    ) -> None:
+        """Persist an API key typed into the picker's inline key stage.
+
+        Writes where ``clawcodex login`` writes (the global config's
+        ``providers.<id>`` block) so the two paths agree and a key set here
+        survives a restart. An existing ``base_url`` / ``default_model`` is
+        preserved — seeding the defaults unconditionally would silently
+        clobber a user's custom endpoint.
+
+        The existing block is read from the GLOBAL tier, never the merged
+        view. ``get_provider_config`` merges the project/local tiers, and this
+        writes globally — so reading merged would launder a repo-committable
+        ``providers.*.base_url`` into the user's global config, permanently and
+        for every other project, paired with the key they just typed. That is
+        the exact redirect ``_UNTRUSTED_TIER_BLOCKED_KEYS`` exists to contain.
+        """
+        if not isinstance(slug, str) or not slug.strip():
+            self._reply(request_id, {"ok": False, "error": "missing provider"})
+            return
+        if not isinstance(api_key, str) or not api_key.strip():
+            self._reply(request_id, {"ok": False, "error": "missing api key"})
+            return
+        try:
+            from src.config import _get_default_manager, set_api_key
+            from src.providers import PROVIDER_INFO, canonical_provider_name
+            from src.providers.catalog import provider_catalog
+
+            pid = canonical_provider_name(slug.strip())
+            info = PROVIDER_INFO.get(pid)
+            if info is None:
+                self._reply(
+                    request_id, {"ok": False, "error": f"unknown provider '{slug}'"}
+                )
+                return
+            global_blocks = _get_default_manager().load_global().get("providers") or {}
+            existing = global_blocks.get(pid) or {}
+            if not isinstance(existing, dict):
+                existing = {}
+            set_api_key(
+                pid,
+                api_key=api_key.strip(),
+                base_url=existing.get("base_url") or info.get("default_base_url"),
+                default_model=(
+                    existing.get("default_model") or info.get("default_model")
+                ),
+            )
+            row = next(
+                (
+                    r
+                    for r in provider_catalog(
+                        current=self.provider_name,
+                        current_models=self._available_models(),
+                        current_ready=self.provider is not None,
+                    )
+                    if r["slug"] == pid
+                ),
+                None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[agent-server] save_provider_key failed")
+            self._reply(request_id, {"ok": False, "error": str(exc)})
+            return
+        self._reply(request_id, {"ok": True, "provider": row})
+
+    def _do_disconnect_provider(self, request_id: object, slug: object) -> None:
+        """Clear a provider's stored credentials (the picker's ^d).
+
+        Refuses the ACTIVE provider: this session holds an already-constructed
+        provider instance, so pulling its key would leave the next turn firing
+        at an endpoint it can no longer authenticate against. Switch away
+        first.
+
+        Clears all three places a key can live — the config ``providers.<id>``
+        block, the config ``env`` block, and a subscription OAuth login — then
+        re-probes. A key exported in the real shell environment cannot be
+        removed from here, so that case is reported honestly rather than
+        claiming a disconnect that did not happen.
+        """
+        if not isinstance(slug, str) or not slug.strip():
+            self._reply(request_id, {"ok": False, "error": "missing provider"})
+            return
+        try:
+            from src.config import _get_default_manager
+            from src.providers import (
+                PROVIDER_INFO,
+                canonical_provider_name,
+                provider_env_vars,
+                provider_has_credentials,
+                provider_requires_api_key,
+                resolve_api_key,
+            )
+            from src.providers.catalog import exclusive_env_vars
+            from src.secret_store import delete_secret, get_secret
+
+            pid = canonical_provider_name(slug.strip())
+            if pid not in PROVIDER_INFO:
+                self._reply(
+                    request_id, {"ok": False, "error": f"unknown provider '{slug}'"}
+                )
+                return
+            if pid == canonical_provider_name(self.provider_name or ""):
+                self._reply(request_id, {
+                    "ok": False,
+                    "disconnected": False,
+                    "error": f"'{pid}' is the active provider — switch to another "
+                             "provider before disconnecting it",
+                })
+                return
+
+            removed = False
+            mgr = _get_default_manager()
+            cfg = mgr.load_global()
+            blocks = cfg.get("providers")
+            if isinstance(blocks, dict):
+                # Rebuild rather than pop in place: load_global returns a
+                # SHALLOW copy, so mutating a nested block reaches the
+                # manager's cache and can desync it from disk when nothing
+                # ends up being written.
+                rebuilt = dict(blocks)
+                touched = False
+                for key, block in blocks.items():
+                    if not isinstance(block, dict):
+                        continue
+                    if canonical_provider_name(key) != pid:
+                        continue
+                    if str(block.get("api_key") or "").strip():
+                        stripped = {k: v for k, v in block.items() if k != "api_key"}
+                        rebuilt[key] = stripped
+                        touched = True
+                if touched:
+                    cfg["providers"] = rebuilt
+                    mgr.save_global(cfg)
+                    removed = True
+            # Sampled BEFORE the delete loop. ``delete_secret`` pops the name
+            # from ``os.environ`` as well as the config block, so reading this
+            # afterwards would find nothing precisely when the name exists in
+            # BOTH places — and that is the case that matters: the config copy
+            # goes, the shell export survives to resurrect it next launch, and
+            # the reply would have claimed a clean disconnect.
+            #
+            # Presence in os.environ alone does NOT mean the user exported it:
+            # ``set_secret`` mirrors every config-block write into the live
+            # process. The value is what separates them — a mirrored secret
+            # matches its config entry, a shell export does not (a name absent
+            # from the block compares against "").
+            import os as _os
+
+            from src.secret_store import CONFIG_ENV_KEY
+
+            stored_env = cfg.get(CONFIG_ENV_KEY)
+            if not isinstance(stored_env, dict):
+                stored_env = {}
+            shell_env = []
+            for _name in provider_env_vars(pid):
+                live = (_os.environ.get(_name) or "").strip()
+                if live and live != str(stored_env.get(_name) or "").strip():
+                    shell_env.append(_name)
+
+            # Only names this provider EXCLUSIVELY owns. Shared ones belong to
+            # another provider too (nvidia-nim lists DEEPSEEK_API_KEY), and
+            # deleting them would destroy a credential the user set for
+            # something else.
+            owned, shared = exclusive_env_vars(pid)
+            # …and never a name the LIVE session authenticates through. The
+            # active-provider guard above only compares slugs, so it misses the
+            # borrowed-name case: a session running on nvidia-nim via
+            # DEEPSEEK_API_KEY would lose its credential when the user
+            # disconnects deepseek, which owns that name outright. Whatever the
+            # slug, disconnect must not de-authenticate the session you are in.
+            active = canonical_provider_name(self.provider_name or "")
+            in_use = set(provider_env_vars(active)) if active else set()
+            kept_in_use: list[str] = []
+            for env_name in owned:
+                if env_name in in_use:
+                    kept_in_use.append(env_name)
+                    continue
+                if delete_secret(env_name):
+                    removed = True
+            # Kept SEPARATE from kept_shared: the two have different remedies.
+            # A contested name is fixed by disconnecting the co-owner; a name
+            # the live session resolves through is fixed by switching
+            # providers first — and folding them together emits the co-owner
+            # advice for the in-use case, which names the active provider that
+            # this handler's own guard will refuse to disconnect.
+            kept_shared = [e for e in shared if (get_secret(e) or "").strip()]
+            if pid == "anthropic":
+                from src.auth.anthropic_subscription import remove_credentials
+
+                removed = remove_credentials() or removed
+            elif pid == "openai":
+                from src.auth.openai_subscription import remove_credentials
+
+                removed = remove_credentials() or removed
+
+            # ``or bool(shell_env)``: a shell export that delete_secret popped
+            # out of this process is still in the user's environment and will
+            # be back next launch, so the provider is NOT disconnected even
+            # though re-probing now finds nothing.
+            still = provider_has_credentials(pid, resolve_api_key(pid)) or bool(shell_env)
+            keyless = not provider_requires_api_key(pid)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[agent-server] disconnect_provider failed")
+            self._reply(request_id, {"ok": False, "error": str(exc)})
+            return
+        response: dict = {
+            "ok": True,
+            "disconnected": removed and not still,
+            "still_authenticated": still,
+        }
+        if kept_shared:
+            response["kept_shared_env"] = kept_shared
+        if kept_in_use:
+            response["kept_in_use_env"] = kept_in_use
+        if still:
+            if keyless:
+                # A local server (Ollama / vLLM / SGLang) accepts any or no
+                # token, so it is never "disconnected" in the credential sense.
+                detail = f"'{pid}' is a local server and needs no credentials"
+            elif shell_env:
+                # Checked BEFORE the shared case: when a name is both shared
+                # and shell-exported, "unset it in your shell" is the half the
+                # user can act on.
+                detail = (
+                    f"'{pid}' still authenticates — {', '.join(shell_env)} is "
+                    "exported in your shell, which only your shell can unset"
+                )
+            elif kept_in_use:
+                # The remedy here is switching providers, NOT disconnecting
+                # the co-owner (that IS the active provider, which the guard
+                # above refuses) and NOT unsetting the name (the live value is
+                # the config copy this handler just declined to delete).
+                detail = (
+                    f"'{pid}' still authenticates via {', '.join(kept_in_use)} — "
+                    f"this session's provider '{active}' resolves through it, so "
+                    "it was left in place; switch to another provider first"
+                )
+            elif kept_shared:
+                # Name the co-owner and the way out; "another provider also
+                # uses it" alone leaves the user with no next step.
+                owners = sorted(
+                    o
+                    for o in PROVIDER_INFO
+                    if o != pid and set(provider_env_vars(o)) & set(kept_shared)
+                )
+                detail = (
+                    f"'{pid}' still authenticates via {', '.join(kept_shared)}, "
+                    f"also used by {', '.join(owners)} — left in place; disconnect "
+                    f"that too, or unset {kept_shared[0]} yourself"
+                )
+            else:
+                # Reached when the surviving key lives somewhere this handler
+                # does not write: a project/local `.clawcodex/config.json`, or
+                # a subscription login. Naming the environment here would send
+                # the user hunting through shell rc files for nothing.
+                detail = (
+                    f"'{pid}' still authenticates from outside the global "
+                    "config (project config or a subscription login)"
+                )
+            response["error"] = detail
+        self._reply(request_id, response)
 
     def _mcp_server_infos(self) -> list[Any] | None:
         """The connected MCP servers' info objects (name + instructions) for
