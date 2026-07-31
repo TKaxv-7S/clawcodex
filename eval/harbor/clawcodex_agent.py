@@ -26,6 +26,20 @@ Model names use Harbor's ``provider/model`` convention: the prefix becomes
 ``--provider deepseek --model deepseek-v4-flash``). A bare name is passed
 through as ``--model`` alone, falling back to clawcodex's own routing.
 
+The split is on the FIRST slash only, so an OpenRouter id — itself
+``vendor/model`` — round-trips correctly by stacking the two conventions:
+``openrouter/openai/gpt-5.6-luna`` → ``--provider openrouter --model
+openai/gpt-5.6-luna``. For example, terminal-bench 2.1 at maximum
+reasoning effort::
+
+    export OPENROUTER_API_KEY=sk-or-v1-...
+    PYTHONPATH=eval/harbor harbor run \
+        --dataset terminal-bench/terminal-bench-2-1 \
+        --agent clawcodex_agent:Clawcodex \
+        --model openrouter/openai/gpt-5.6-luna \
+        --ak effort=max \
+        --jobs-dir eval/harbor/jobs --n-concurrent 4
+
 API keys reach the container two ways, either is sufficient:
 
 * exported in the host environment (the running provider's key vars are
@@ -38,13 +52,35 @@ Agent kwargs (``--ak key=value``):
 * ``max_turns`` — clawcodex ``--max-turns`` (default 300 here; the CLI's
   own default of 50 is too low for terminal-bench tasks). The
   ``CLAWCODEX_MAX_TURNS`` host env var works as a fallback.
-* ``effort`` — clawcodex ``--effort`` (low|medium|high|xhigh|max) for
-  models that support ``output_config.effort`` (Opus 5, Opus 4.6/4.8,
-  Sonnet 4.6, Fable 5). ``xhigh`` is model-dependent (opus-5/opus-4-8 yes;
-  sonnet-4-6/opus-4-6 no) — clawcodex degrades it to ``high`` where
-  rejected. A model missing from clawcodex's effort allowlist drops the
-  flag SILENTLY, so a new model needs a clawcodex build that registers it
-  (see ``source`` below) before an effort number means anything.
+* ``effort`` — clawcodex ``--effort`` (low|medium|high|xhigh|max). How it
+  reaches the wire depends on the provider family, and the two behave
+  differently:
+
+  - **Anthropic wire** — sent as ``output_config.effort``, and gated on
+    clawcodex's effort allowlist (Opus 5, Opus 4.6/4.8, Sonnet 4.6,
+    Fable 5). A model missing from that allowlist drops the flag SILENTLY,
+    so a new Anthropic model needs a clawcodex build that registers it
+    (see ``source`` below) before an effort number means anything.
+    ``xhigh`` is model-dependent (opus-5/opus-4-8 yes; sonnet-4-6/opus-4-6
+    no) and degrades to ``high`` where rejected.
+  - **OpenAI-compatible wire** (openrouter, openai, deepseek, zai, …) —
+    sent as the top-level ``reasoning_effort`` body field, with no model
+    allowlist and no ``xhigh`` clamp; the level passes through verbatim.
+    ONE exception: the ChatGPT-subscription path (``subscription=true``
+    with ``--model openai/…``) clamps ``xhigh`` and ``max`` down to
+    ``high`` before sending, because that backend advertises only
+    low/medium/high and rejects higher tiers. So ``--ak effort=max`` plus
+    subscription auth really runs at ``high`` — an API-key or OpenRouter
+    run of the same model does not.
+
+  REQUIRES a clawcodex build from 2026-07-31 or later. Before that, effort
+  was emitted ONLY on the Anthropic branch, so ``--effort`` was a silent
+  no-op for every OpenAI-compatible provider — an eval run against, say,
+  ``openrouter/openai/gpt-5.6-luna`` would report ``effort=max`` in its
+  config and send nothing. Pin ``source`` accordingly when benchmarking a
+  non-Anthropic model at a specific effort, and confirm the level is really
+  on the wire rather than trusting the job config.
+
   ``CLAWCODEX_EFFORT`` host env var works as a fallback.
 * ``version`` — pin a ``clawcodex-cli`` PyPI version (default: latest).
 * ``source`` — full pip-installable spec overriding the PyPI package, e.g.

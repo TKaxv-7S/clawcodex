@@ -554,8 +554,10 @@ def _model_supports_xhigh_effort(model: str | None) -> bool:
 VALID_THINKING_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
 
-def resolve_thinking_effort(explicit: str | None, model: str | None) -> str | None:
-    """Effective ``output_config.effort`` value for one request, or ``None``
+def resolve_thinking_effort(
+    explicit: str | None, model: str | None, *, clamp_xhigh: bool = True
+) -> str | None:
+    """Effective reasoning-effort value for one request, or ``None``
     to omit the parameter entirely.
 
     Precedence mirrors TS main.tsx:2631 ``parseEffortValue(options.effort)
@@ -571,6 +573,19 @@ def resolve_thinking_effort(explicit: str | None, model: str | None) -> str | No
     :func:`_model_supports_xhigh_effort`'s allowlist rather than 400ing the
     request; ``"max"`` passes through everywhere effort-capable (see the
     probe notes on the allowlist helper).
+
+    ``clamp_xhigh=False`` disables that degradation, for callers on the
+    OpenAI-compatible wire. The allowlist is a list of ANTHROPIC model names
+    (``opus-5``, ``opus-4-8``, …) checked by substring, so it matches nothing
+    on that wire and would downgrade every ``xhigh`` to ``high`` — silently
+    ignoring what the user asked for. ``xhigh`` is a first-class OpenAI level
+    (developers.openai.com/api/docs/guides/reasoning lists none | minimal |
+    low | medium | high | xhigh | max, and recommends xhigh precisely for
+    "agentic tasks that require long runs"); verified accepted by
+    ``openai/gpt-5.6-luna`` on 2026-07-31. Providers that don't know the
+    field ignore it, so passing it through is the safe direction there —
+    whereas on the Anthropic wire an unsupported ``xhigh`` is a hard 400,
+    which is why the clamp stays on by default.
     """
     value = (explicit or "").strip().lower()
     if value not in VALID_THINKING_EFFORT_LEVELS:
@@ -584,7 +599,7 @@ def resolve_thinking_effort(explicit: str | None, model: str | None) -> str | No
             value = ""
     if value not in VALID_THINKING_EFFORT_LEVELS:
         return None
-    if value == "xhigh" and not _model_supports_xhigh_effort(model):
+    if value == "xhigh" and clamp_xhigh and not _model_supports_xhigh_effort(model):
         logger.debug(
             "effort xhigh not supported on %s; sending high instead", model
         )
@@ -1156,6 +1171,56 @@ async def _call_model_sync(
                 # resolve_thinking_effort).
                 if resolved_effort is not None:
                     call_kwargs["output_config"] = {"effort": resolved_effort}
+    elif not is_anthropic:
+        # NON-Anthropic wire: reasoning effort is a top-level
+        # ``reasoning_effort`` body field, NOT ``output_config``. This is the
+        # ONLY site that applies effort for this family — the interactive path
+        # hands the level down as ``thinking_effort`` and does not wrap the
+        # provider (see ``AgentSession._turn_effort_routing``, which used to
+        # wrap it in an ``_EffortProvider`` and collided with this branch).
+        # One level, one injection site: two of them silently inverted the
+        # documented precedence, with ``settings.effort`` beating an explicit
+        # session ``/effort``.
+        #
+        # Before this branch existed, effort was emitted only on the Anthropic
+        # side, so ``--effort`` on the headless ``-p`` path (the one the
+        # terminal-bench harness drives) was a SILENT no-op for every
+        # OpenAI-compatible provider. Verified 2026-07-31 against a capture
+        # server: ``--effort max --provider openrouter`` produced a body of
+        # {messages, model, stream, stream_options, tools}, no effort field.
+        #
+        # Not gated on ``_model_supports_effort``: that allowlist is a list of
+        # Anthropic model names for the ``output_config`` parameter and matches
+        # nothing here. Gating on it would reintroduce the silent drop.
+        #
+        # SCOPE — this is ``not is_anthropic``, which is broader than
+        # "OpenAI-compatible": Gemini lands here too, and its provider picks
+        # named kwargs out of ``**kwargs`` rather than forwarding
+        # ``extra_body``, so effort is still dropped there. Harmless (no
+        # 400), but it means Gemini keeps the silent-no-op bug this branch
+        # exists to kill; fixing it needs Gemini's own generation-config
+        # shape, not this field.
+        #
+        # Every real OpenAI-compatible provider does forward it: the base
+        # ``chat``/``chat_stream``/``_stream_attempt`` splat leftover kwargs
+        # into ``client.chat.completions.create``, which handles ``extra_body``
+        # natively, and openrouter/zai/deepseek add no overrides. The
+        # ChatGPT-subscription path reads it back out of ``extra_body``
+        # instead (openai_provider ``_subscription_reasoning_effort``) rather
+        # than forwarding it into a Responses body that would reject it.
+        # Providers that simply don't know the field ignore it (probed
+        # 2026-07-31: deepseek-v4-pro and glm-5.2 both accept it without error).
+        #
+        # ``setdefault`` so an explicit caller-supplied extra_body wins.
+        resolved_effort = resolve_thinking_effort(
+            thinking_effort,
+            getattr(provider, "model", None) or call_kwargs.get("model"),
+            clamp_xhigh=False,
+        )
+        if resolved_effort is not None:
+            extra_body = dict(call_kwargs.get("extra_body") or {})
+            extra_body.setdefault("reasoning_effort", resolved_effort)
+            call_kwargs["extra_body"] = extra_body
 
     # TS callModel() uses SSE streaming for faster first-byte latency and
     # progressive text display.  Use chat_stream_response() which streams

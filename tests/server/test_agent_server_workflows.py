@@ -196,12 +196,26 @@ async def test_effort_routing_matches_the_provider_wire_shape(tmp_path):
     Sending the OpenAI shape to Anthropic is a hard 400 (probed 2026-07-25:
     ``reasoning_effort: Extra inputs are not permitted``), which used to
     break every request after a ``/effort`` in an interactive Anthropic
-    session. Pin both directions of the split.
+    session.
+
+    That split now lives ENTIRELY at the wire boundary in
+    ``query.py::_call_model_sync`` (covered by
+    tests/test_query_openai_compat_effort.py, which asserts the actual kwargs
+    each family receives). Routing's own job shrank to "hand the level over,
+    unwrapped, for both families" — so that is what this pins.
+
+    It used to wrap OpenAI-compat providers in an ``_EffortProvider`` and
+    return ``thinking_effort=None``. Once query.py learned to emit
+    ``reasoning_effort`` itself, the two injection sites collided: query.py
+    filled ``extra_body`` from ``settings.effort`` first and the wrapper's
+    ``setdefault`` no-op'd, so an explicit ``/effort`` was silently discarded
+    in favour of the persisted setting. The wrapper was deleted; asserting the
+    provider comes back UNWRAPPED is what keeps a second injection site from
+    reappearing.
     """
     from unittest.mock import MagicMock
 
     from src.providers.anthropic_provider import AnthropicProvider
-    from src.server.agent_server import _EffortProvider
 
     async with _spawned(tmp_path, _TextProvider) as (handle, gen):
         sess = _session_of(handle)
@@ -210,24 +224,20 @@ async def test_effort_routing_matches_the_provider_wire_shape(tmp_path):
         sess._effort = None
         assert sess._turn_effort_routing() == (sess.provider, None)
 
-        # Anthropic → the real provider plus output_config.effort. The
-        # provider must NOT be wrapped: wrapping is what injected the
-        # rejected body field.
+        # Anthropic → the real provider plus the level; query.py turns it
+        # into output_config.effort.
         sess.provider = AnthropicProvider(api_key="sk-test", model="claude-opus-5")
         sess._effort = "xhigh"
         provider, thinking_effort = sess._turn_effort_routing()
         assert provider is sess.provider
-        assert not isinstance(provider, _EffortProvider)
         assert thinking_effort == "xhigh"
 
-        # OpenAI-compatible → wrapped, and effort stays out of the query
-        # loop's Anthropic-only parameter.
+        # OpenAI-compatible → same shape. The provider must NOT be wrapped:
+        # query.py is the single injection site for reasoning_effort.
         sess.provider = MagicMock(name="openai-compat")
         provider, thinking_effort = sess._turn_effort_routing()
-        assert isinstance(provider, _EffortProvider)
-        assert thinking_effort is None
-        injected = provider._inject({})
-        assert injected["extra_body"]["reasoning_effort"] == "xhigh"
+        assert provider is sess.provider
+        assert thinking_effort == "xhigh"
 
 
 async def test_effort_reaches_the_query_loop_kwarg(tmp_path, monkeypatch):
@@ -294,13 +304,12 @@ async def test_launch_effort_flag_seeds_the_session(tmp_path):
     async with _spawned(tmp_path, _TextProvider, config) as (handle, gen):
         sess = _session_of(handle)
         assert sess._effort == "xhigh"
-        # _TextProvider is not Anthropic-shaped, so the level routes down
-        # the OpenAI-compat branch — the point here is only that the launch
-        # flag SEEDED a level at all. Per-family routing is pinned by
+        # The point here is only that the launch flag SEEDED a level at all;
+        # routing hands it over unwrapped for either family, and the
+        # per-family wire shape is pinned by
         # test_effort_routing_matches_the_provider_wire_shape.
         provider, thinking_effort = sess._turn_effort_routing()
-        assert provider is not sess.provider and thinking_effort is None
-        assert provider._inject({})["extra_body"]["reasoning_effort"] == "xhigh"
+        assert provider is sess.provider and thinking_effort == "xhigh"
 
         # A later /effort still wins over the launch flag, and auto clears.
         r = await _control(handle, gen, "e1", {"subtype": "set_effort", "effort": "low"})
@@ -333,8 +342,9 @@ async def test_launch_effort_flag_ignores_off_ladder_values(tmp_path, seed):
 async def test_launch_effort_flag_is_normalized(tmp_path):
     """Case is normalized at the seed, matching /effort's ``.lower()``.
 
-    ``_EffortProvider`` injects the level verbatim into the request body, so
-    an unnormalized "MAX" would go out on the OpenAI-compat wire as-is.
+    The OpenAI-compat wire sends the level verbatim as ``reasoning_effort``
+    (query.py injects it at the wire boundary), so an unnormalized "MAX"
+    would go out as-is.
     """
     async with _spawned(tmp_path, _TextProvider, AgentServerConfig(effort=" MAX ")) as (
         handle,

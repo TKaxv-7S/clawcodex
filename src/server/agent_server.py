@@ -197,10 +197,11 @@ class _AgentSession:
     init_error: str | None = None
     _session_name: str | None = None  # user-set label (/rename) shown in /resume
     _mcp_runtime: Any = None  # McpRuntime (connected MCP servers) when configured
-    # /effort reasoning level. Routed TWO different ways by provider family
-    # (see _turn_effort_routing): Anthropic takes ``output_config.effort``
-    # via the query loop's ``thinking_effort``; OpenAI-compatible providers
-    # take ``reasoning_effort`` in the request body via _EffortProvider.
+    # /effort reasoning level. Carried to the query loop as
+    # ``thinking_effort`` (see _turn_effort_routing) and turned into the
+    # parameter each provider family accepts at the wire boundary:
+    # ``output_config.effort`` on the Anthropic wire, a top-level
+    # ``reasoning_effort`` body field on the OpenAI-compatible one.
     _effort: str | None = None
     _knowledge: Any = None  # KnowledgeGraph (lazy-loaded), populated at each turn end
     _knowledge_enabled: bool = True  # the original's knowledgeGraphEnabled (default on)
@@ -2299,40 +2300,32 @@ class _AgentSession:
         """Return ``(provider_for_this_turn, thinking_effort)`` for ``/effort``.
 
         The two provider families take reasoning effort as DIFFERENT wire
-        parameters, and sending one family's shape to the other is a hard
-        400 — so the level has to be routed, not injected uniformly:
+        parameters — ``output_config.effort`` on the Anthropic wire (incl.
+        Minimax, which speaks the Anthropic shape), a top-level
+        ``reasoning_effort`` body field on the OpenAI-compatible one — and
+        sending one family's shape to the other is a hard 400. Probed
+        2026-07-25 against claude-opus-5: ``400 invalid_request_error —
+        reasoning_effort: Extra inputs are not permitted``.
 
-        * **Anthropic** (incl. Minimax, which speaks the Anthropic shape):
-          ``output_config={"effort": …}``. Returned as ``thinking_effort``
-          so ``resolve_thinking_effort`` applies it at the wire boundary
-          with the per-model gating (unsupported ``xhigh`` clamps to high).
-        * **OpenAI-compatible**: ``reasoning_effort`` as a top-level body
-          field, which is what :class:`_EffortProvider` injects.
+        That routing now lives ENTIRELY at the wire boundary in
+        ``query.py::_call_model_sync``, which branches on the same
+        ``is_anthropic_wire`` predicate. So this method just hands the level
+        over as ``thinking_effort`` and does not wrap the provider.
 
-        Before this split, every provider got the ``extra_body`` injection.
-        On the Anthropic wire that is rejected — probed 2026-07-25 against
-        claude-opus-5: ``400 invalid_request_error — reasoning_effort:
-        Extra inputs are not permitted`` — so a ``/effort`` in an
-        interactive Anthropic session broke every following request in that
-        session, while the headless ``--effort`` path (which always went
-        through ``thinking_effort``) worked.
-
-        ``is_anthropic_wire`` is the shared predicate (``src/providers``),
-        the same one ``query.py`` uses to decide whether ``output_config``
-        is emitted at all — they have to agree or this bug comes back.
-        Deliberately NOT wrapped in a try/except: the only failure mode
-        would be an unimportable provider module, in which case the
-        provider could not be an instance of it anyway, and falling back to
-        the ``_EffortProvider`` branch on an Anthropic session would pick
-        the guaranteed-400 path over a merely-omitted effort.
+        It used to wrap OpenAI-compatible providers in an ``_EffortProvider``
+        that injected ``extra_body.reasoning_effort`` itself, because
+        ``query.py`` emitted effort only on its Anthropic branch. When
+        query.py learned the OpenAI-compatible half, the two injection sites
+        collided: routing returned ``thinking_effort=None`` for this family,
+        so ``resolve_thinking_effort`` fell through to ``settings.effort``
+        and filled ``extra_body`` first, and the wrapper's ``setdefault``
+        then found the key taken. The session's ``/effort`` was silently
+        discarded in favour of the persisted setting — an inversion of the
+        documented precedence (explicit beats persisted), reproducible as
+        ``/effort max`` + ``settings.effort medium`` putting ``medium`` on
+        the wire. One level, one injection site, no drift.
         """
-        if not self._effort:
-            return self.provider, None
-        from src.providers import is_anthropic_wire
-
-        if is_anthropic_wire(self.provider):
-            return self.provider, self._effort
-        return _EffortProvider(self.provider, self._effort), None
+        return self.provider, (self._effort or None)
 
     def _do_set_effort(self, request_id: object, effort: object) -> None:
         """``/effort`` backend: reasoning levels plus the ``ultracode``
@@ -4600,10 +4593,11 @@ class _AgentSession:
                 on_message=on_message,
                 abort_controller=abort,
                 extended_thinking=self._thinking,  # None = model default; True/False = ThinkingToggle
-                # /effort on the Anthropic path: resolved at the wire
-                # boundary into ``output_config.effort`` with the per-model
-                # gating (xhigh clamps to high where unsupported). None for
-                # OpenAI-compat providers, which got _EffortProvider instead.
+                # /effort for BOTH provider families: resolved at the wire
+                # boundary into ``output_config.effort`` (Anthropic, with the
+                # per-model gating — xhigh clamps to high where unsupported)
+                # or a top-level ``reasoning_effort`` body field
+                # (OpenAI-compatible, no clamp).
                 thinking_effort=turn_thinking_effort,
                 fallback_model=self.config.fallback_model,
                 pipeline_config=pipeline_config,
@@ -4991,7 +4985,7 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
         # treats it as "nothing requested" and silently substitutes
         # settings.effort, while the init frame's badge displays the value
         # the user asked for. Unnormalized case has the same shape on the
-        # OpenAI-compat side, where _EffortProvider injects it verbatim.
+        # OpenAI-compat side, which sends the level verbatim.
         # ``isinstance`` rather than ``or ""``: a non-str effort from a
         # programmatic caller would raise inside this try block, and
         # _build_runtime converts any raise into init_error — killing the
@@ -5696,55 +5690,6 @@ def _fmt_rule(rule: Any) -> str:
     tool = getattr(v, "tool_name", "") or "?"
     content = getattr(v, "rule_content", None)
     return f"{tool}({content})" if content else tool
-
-
-class _EffortProvider:
-    """Wraps a provider to inject ``reasoning_effort`` via ``extra_body`` on chat
-    calls (the original's /effort). Used only when /effort is set; delegates
-    everything else to the inner provider, so the default path is untouched.
-
-    OpenAI-compatible providers ONLY — ``reasoning_effort`` is their body
-    field. The Anthropic wire rejects it (``400 … Extra inputs are not
-    permitted``, probed 2026-07-25) and takes ``output_config.effort``
-    instead, so :meth:`AgentSession._turn_effort_routing` sends Anthropic
-    sessions down the ``thinking_effort`` path and never wraps them here.
-    """
-
-    def __init__(self, inner: Any, effort: str) -> None:
-        self._inner = inner
-        self._effort = effort
-
-    def __getattr__(self, name: str) -> Any:  # model, get_available_models, …
-        # Guard the delegate itself: without this, an instance created
-        # WITHOUT __init__ (copy.copy / copy.deepcopy build one that way,
-        # then probe for __setstate__/__deepcopy__) recurses forever —
-        # __getattr__ looks up self._inner, which is missing, which calls
-        # __getattr__ … until RecursionError. Two live sites copy the
-        # session provider (src/agent/run_agent.py's per-subagent model
-        # override and src/permissions/yolo_classifier.py), and both
-        # swallow Exception — which RecursionError is — so the failure was
-        # silent.
-        if name == "_inner":
-            raise AttributeError(name)
-        return getattr(self._inner, name)
-
-    def _inject(self, kwargs: dict) -> dict:
-        eb = dict(kwargs.get("extra_body") or {})
-        eb.setdefault("reasoning_effort", self._effort)
-        kwargs["extra_body"] = eb
-        return kwargs
-
-    def chat_stream_response(self, *args: Any, **kwargs: Any) -> Any:
-        return self._inner.chat_stream_response(*args, **self._inject(kwargs))
-
-    def chat(self, *args: Any, **kwargs: Any) -> Any:
-        return self._inner.chat(*args, **self._inject(kwargs))
-
-    def chat_stream(self, *args: Any, **kwargs: Any) -> Any:
-        return self._inner.chat_stream(*args, **self._inject(kwargs))
-
-    async def chat_async(self, *args: Any, **kwargs: Any) -> Any:
-        return await self._inner.chat_async(*args, **self._inject(kwargs))
 
 
 def _sessions_dir() -> Path:

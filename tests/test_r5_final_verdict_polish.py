@@ -17,16 +17,38 @@ from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 
 
+class _DecoratedProvider:
+    """Stand-in for a provider decorator — anything exposing ``_inner``.
+
+    This used to be the real ``_EffortProvider`` from agent_server, which
+    wrapped OpenAI-compatible providers to inject ``reasoning_effort``. That
+    class was deleted once reasoning effort moved to the wire boundary in
+    query.py (two injection sites silently inverted /effort vs settings.effort
+    precedence). The UNWRAP it motivated is still live in
+    ``agent_loop_compat._maybe_recall_memories`` as a general guard, so the
+    behaviour is still worth pinning — a future decorator with the same shape
+    must not hide an AnthropicProvider from the recall cost-pin. Hence a local
+    minimal wrapper rather than deleting these tests with the class.
+    """
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def __getattr__(self, name):
+        if name == "_inner":
+            raise AttributeError(name)
+        return getattr(self._inner, name)
+
+
 class TestEffortProviderUnwrapForRecall(unittest.TestCase):
-    """N1 — the /effort wrapper no longer hides the AnthropicProvider from the
-    recall cost-pin."""
+    """N1 — a provider decorator no longer hides the AnthropicProvider from
+    the recall cost-pin."""
 
     def test_wrapped_bypasses_pin_unwrapped_restores_it(self):
         from src.memdir.find_relevant_memories import _resolve_recall_model
         from src.providers.anthropic_provider import AnthropicProvider
-        from src.server.agent_server import _EffortProvider
 
-        wrapped = _EffortProvider(AnthropicProvider(api_key="k"), "high")
+        wrapped = _DecoratedProvider(AnthropicProvider(api_key="k"))
         settings = MagicMock()
         settings.small_fast_model = "claude-3-5-haiku-20241022"
 
@@ -43,10 +65,9 @@ class TestEffortProviderUnwrapForRecall(unittest.TestCase):
         # provider that reaches the recall — it must be the UNWRAPPED inner.
         from src.providers.anthropic_provider import AnthropicProvider
         from src.query import agent_loop_compat as alc
-        from src.server.agent_server import _EffortProvider
 
         inner = AnthropicProvider(api_key="k")
-        wrapped = _EffortProvider(inner, "high")
+        wrapped = _DecoratedProvider(inner)
         captured = {}
 
         async def _fake_reminder(query, memdir, *, provider, already_surfaced,
