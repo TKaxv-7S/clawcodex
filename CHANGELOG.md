@@ -53,6 +53,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`/model` listed one provider instead of every configured one.** Step 1 of
+  the picker showed a single row — `anthropic · 22 models` — no matter how many
+  providers were set up. `model.options` was a stub: it called the
+  `get_settings` control, which describes only the provider the session is
+  *currently* on, and synthesized a hardcoded one-element array from it. The
+  26-entry registry (`PROVIDER_INFO`, hand-written provider classes plus the
+  data-driven OpenAI-compatible specs) was never enumerated, and no backend
+  control exposed it, so the row on screen was the active provider echoed back
+  at itself. A new `list_model_providers` control returns the real catalog,
+  ordered active-first, then providers that can authenticate, then the rest.
+
+  Three paths behind it had never been reachable, and two were broken:
+
+  - Selecting a model from another provider was refused. `set_model` will not
+    point the live provider at a foreign model id — a cross-provider switch
+    needs the registry rebuild only `set_provider` performs — so its refusal
+    now carries a machine-readable `provider_mismatch` and the client re-drives
+    the switch through `set_provider` before re-applying the model. If that
+    second step fails it rolls back and reports which provider the session
+    actually ended on.
+  - `model.save_key` was never wired and fell through to the adapter's default
+    case, so inline API-key entry always answered "failed to save key". Keys
+    now persist where `clawcodex login` writes them.
+  - `model.disconnect` was likewise unwired, so `^d` silently did nothing.
+
+  Disconnect deletes only environment-variable names a provider *owns*. The
+  candidate list is a resolution preference, not a claim of ownership —
+  `nvidia-nim` accepts `DEEPSEEK_API_KEY` — so treating it as a delete-set
+  would destroy a credential set for something else, including the provider the
+  session is running on. Ownership follows the primary candidate, contested
+  names are reported rather than removed, and a key the live session
+  authenticates through is never touched. A shell export sitting behind a
+  config key is detected before deletion, since removing the config copy makes
+  the provider look disconnected while the export restores it on next launch.
+
+  Known limitation: when no provider is configured at all the session fails to
+  start, and the `init_error` guard short-circuits every control — including
+  this one — so the picker cannot yet be used to paste a first key. It now
+  reports that reason instead of inventing a provider row.
+
 - **`--model`/`/model` selection is now resolved from one rule at every
   entrypoint.** The persisted `/model` choice was applied only in the
   interactive agent-server, and only *after* the provider was constructed
