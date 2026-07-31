@@ -135,6 +135,35 @@ _TIER_MUSE_SPARK = {
     "cache_creation": 1.25 / 1_000_000,
     "cache_read": 0.15 / 1_000_000,
 }
+# OpenAI GPT-5.6 Luna / Luna Pro, as proxied by OpenRouter (both variants
+# publish identical rates). Read off OpenRouter's /models pricing record
+# 2026-07-31: prompt $0.10/M, completion $0.60/M, input_cache_write
+# $0.125/M, input_cache_read $0.01/M.
+#
+# That record also carries a long-context override: above 272,000 prompt
+# tokens every rate roughly doubles. Implemented (not merely documented)
+# because this is a 1.05M-window model whose reason for being registered is a
+# benchmark that will cross 272K on long tasks, and whose cost gets compared
+# against other agents' — under-reporting the expensive half of a run by ~2x
+# would corrupt exactly the number the eval exists to produce.
+#
+# Cache rates remain inert in practice: the generic OpenAI-compat usage
+# builder does not map ``prompt_tokens_details.cached_tokens`` onto
+# ``cache_read_input_tokens`` (only the hand-written DeepSeek provider does),
+# so cached input bills at the full input rate. Recorded for when that lands.
+_GPT_56_LUNA_INPUT_TIER_LIMIT = 272_000
+_TIER_GPT_56_LUNA = {
+    "input": 0.10 / 1_000_000,
+    "output": 0.60 / 1_000_000,
+    "cache_creation": 0.125 / 1_000_000,
+    "cache_read": 0.01 / 1_000_000,
+}
+_TIER_GPT_56_LUNA_LONG = {
+    "input": 0.20 / 1_000_000,
+    "output": 0.90 / 1_000_000,
+    "cache_creation": 0.25 / 1_000_000,
+    "cache_read": 0.02 / 1_000_000,
+}
 
 
 # Exact-match table — keyed by canonical model name. Order DOESN'T matter
@@ -171,6 +200,15 @@ PRICING: dict[str, dict[str, float]] = {
     "MiniMax-M2.7": _TIER_MINIMAX_M27,
     # Meta Muse Spark (api.meta.ai)
     "muse-spark-1.1": _TIER_MUSE_SPARK,
+    # OpenAI GPT-5.6 Luna. Reached from OpenRouter's ``openai/gpt-5.6-luna``
+    # via get_pricing's vendor-prefix strip, same as the DeepSeek rows.
+    # VALUES UNUSED — these two rows act only as membership gates for
+    # ``get_pricing``'s ``model in PRICING`` checks; the live rates are
+    # picked by prompt size in ``_get_exact_pricing``, which returns before
+    # reaching ``PRICING.get(model)``. Same shape as the MiniMax-M3 row.
+    # Editing the dicts below changes nothing; edit the tiers instead.
+    "gpt-5.6-luna": _TIER_GPT_56_LUNA,
+    "gpt-5.6-luna-pro": _TIER_GPT_56_LUNA,
 }
 
 
@@ -211,6 +249,15 @@ def _get_exact_pricing(
     input_tokens: int,
     service_tier: str,
 ) -> dict[str, float] | None:
+    # Context-tiered models: the published rate depends on how big THIS
+    # request's prompt is. ``model`` is already the canonical bare key here
+    # (get_pricing strips any ``<vendor>/`` prefix before calling).
+    if model in ("gpt-5.6-luna", "gpt-5.6-luna-pro"):
+        return (
+            _TIER_GPT_56_LUNA_LONG
+            if input_tokens > _GPT_56_LUNA_INPUT_TIER_LIMIT
+            else _TIER_GPT_56_LUNA
+        )
     if model != "MiniMax-M3":
         return PRICING.get(model)
 

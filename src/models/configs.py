@@ -416,6 +416,31 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
         context_window=1_048_576,
         max_output_tokens=128_000,
     ),
+    # The same model as the row above, under its OpenRouter id. This table is
+    # keyed by BARE name and ``get_model_config`` deliberately does not strip
+    # a ``<vendor>/`` prefix (see its docstring), so without this row the id
+    # that actually reaches the provider on the OpenRouter path matches
+    # nothing and silently falls back to DEFAULT_CONTEXT_WINDOW (200K) — a 5x
+    # under-read that makes auto-compact fire at a fifth of the real window.
+    # Added for the terminal-bench harness, which drives this model as
+    # ``--model openrouter/openai/gpt-5.6-luna``; Harbor splits on the FIRST
+    # slash, so clawcodex receives ``--model openai/gpt-5.6-luna``.
+    #
+    # Only Luna is duplicated, not the whole Sol/Terra family: a qualified row
+    # is the narrow, per-model answer to a general gap, and adding rows
+    # nobody routes yet is speculative duplication. The general fix (teaching
+    # the resolver the vendor prefix, as ``get_pricing`` already does) is
+    # "decision #1" and stays out of scope — see the docstring.
+    #
+    # Base for the prefix fallback is "openai/gpt-5.6", which nothing else
+    # claims, so ``openai/gpt-5.6-luna-pro`` resolves here too — matching how
+    # the bare rows above let ``gpt-5.6-sol-pro`` through.
+    "openai/gpt-5.6-luna": ModelConfig(
+        model_id="openai/gpt-5.6-luna",
+        display_name="GPT-5.6 Luna",
+        context_window=1_048_576,
+        max_output_tokens=128_000,
+    ),
     "gpt-5.5": ModelConfig(
         model_id="gpt-5.5",
         display_name="GPT-5.5",
@@ -486,7 +511,25 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
 
 
 def get_model_config(model_id: str) -> ModelConfig | None:
-    """Get config for a model, or None if unknown."""
+    """Get config for a model, or None if unknown.
+
+    Exact match, then a prefix fallback for date-variant ids (a row's claimed
+    prefix is its key minus the last ``-``-segment).
+
+    NOT attempted: stripping a leading ``<vendor>/`` segment so OpenRouter ids
+    resolve to their bare row. ``get_pricing`` (services/pricing.py) does
+    exactly that, and mirroring it here is tempting — but it is deliberately
+    out of scope, the same call ``tests/test_deepseek_prefix_cache.py`` pins
+    as "decision #1" (``deepseek/deepseek-v4-pro`` keeps the 200K default).
+    Two reasons it is not a free win: it would silently outrank a user's own
+    ``modelLimits`` override, which ``get_context_window_for_model`` consults
+    only when this returns ``None``; and it would resolve ids whose bare name
+    prefix-matches an unrelated row, in the window-WIDENING direction, which
+    overflows the request instead of merely compacting early. Reversing that
+    decision is its own change with its own test sweep. A vendor-qualified
+    model that needs a real window gets an explicit row instead — see
+    ``openai/gpt-5.6-luna``.
+    """
     if model_id in MODEL_CONFIGS:
         return MODEL_CONFIGS[model_id]
     # Try prefix match (for date-variant models)

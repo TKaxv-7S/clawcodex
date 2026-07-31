@@ -55,12 +55,23 @@ def _subscription_reasoning_effort(requested: str | None = None) -> str:
     """Reasoning effort for subscription requests.
 
     Precedence: the session's ``/effort`` setting (arrives as
-    ``extra_body.reasoning_effort`` via the agent-server's
-    ``_EffortProvider`` wrapper) → ``CLAWCODEX_OPENAI_REASONING_EFFORT``
-    → ``medium`` (OpenCode's default, transform.ts:1176, and the
-    backend's own default_reasoning_level). ``xhigh``/``max`` clamp to
-    ``high`` — the general gpt-5.x models advertise low/medium/high and
-    reject higher tiers.
+    ``extra_body.reasoning_effort``, injected at the wire boundary by
+    ``query.py::_call_model_sync`` for every OpenAI-compatible provider)
+    → ``CLAWCODEX_OPENAI_REASONING_EFFORT`` → ``medium`` (OpenCode's
+    default, transform.ts:1176, and the backend's own
+    default_reasoning_level).
+
+    ``xhigh``/``max`` clamp to ``high`` HERE, and only here: this is the
+    ChatGPT-subscription backend (chatgpt.com/backend-api/codex), whose
+    general gpt-5.x models advertise low/medium/high and reject higher
+    tiers (probed 2026-07-25). That is narrower than the public API —
+    developers.openai.com/api/docs/guides/reasoning lists none | minimal |
+    low | medium | high | xhigh | max and notes support varies by model —
+    and narrower than what a gateway may accept (``openai/gpt-5.6-luna``
+    via OpenRouter takes both ``xhigh`` and ``max``, probed 2026-07-31,
+    with reasoning-token counts rising monotonically across the ladder).
+    So the clamp is a property of THIS backend, not of the level names;
+    the generic OpenAI-compatible path deliberately does not clamp.
     """
     for candidate in (requested, os.environ.get("CLAWCODEX_OPENAI_REASONING_EFFORT")):
         effort = (candidate or "").strip().lower()
@@ -275,8 +286,8 @@ class OpenAIProvider(OpenAICompatibleProvider):
             "stream": True,
             "include": list(INCLUDE_ENCRYPTED_REASONING),
             "reasoning": {
-                # /effort arrives as extra_body.reasoning_effort via the
-                # agent-server's _EffortProvider wrapper (agent_server.py).
+                # /effort arrives as extra_body.reasoning_effort, injected
+                # at the wire boundary by query.py::_call_model_sync.
                 "effort": _subscription_reasoning_effort(
                     (kwargs.get("extra_body") or {}).get("reasoning_effort")
                 ),
