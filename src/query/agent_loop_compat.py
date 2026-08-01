@@ -840,6 +840,24 @@ async def run_query_as_agent_loop(
         response_text = "[Max tool turns reached]"
     elif (
         terminal is not None
+        and getattr(terminal, "reason", None) == "empty_response"
+    ):
+        # The model returned no tool calls, no text, and nothing in the outbox
+        # even after the continuation-nudge budget was spent. There is nothing
+        # to surface, so say THAT rather than returning "" — an empty string
+        # is indistinguishable from a legitimately terse answer, and that
+        # ambiguity is exactly what let these runs pass as clean successes.
+        # Same shape as the max_turns / tool_failure_loop sentinels above.
+        # Worded to stay true on BOTH routes into this terminal: the usual
+        # one (the empty-turn retry budget is spent) and the one where
+        # max_turns blocked the retries so no re-prompting happened at all.
+        # Claiming "after repeated prompting" would be false in the second.
+        response_text = (
+            "[Stopped: the model returned an empty response — no text and no "
+            "tool calls — and did not recover]"
+        )
+    elif (
+        terminal is not None
         and getattr(terminal, "reason", None) == "tool_failure_loop"
     ):
         # Graceful guard stop: the loop yielded the trip explanation as an

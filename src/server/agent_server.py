@@ -3931,10 +3931,28 @@ class _AgentSession:
         verdict. Never raises.
         """
         try:
-            if not outcome or outcome.get("subtype") != "success":
+            if not outcome:
                 return
+            # A turn the AGENT LOOP cut short (the tool-failure-loop guard,
+            # max_turns, an empty response) carries no real output, so there is
+            # nothing for the judge to weigh — feeding it the "[Stopped: …]"
+            # sentinel is how a cut-short turn gets mistaken for progress.
+            #
+            # But it must not END the goal either. Before the subtype was
+            # derived, such a turn arrived as "success", was judged not-done,
+            # and the loop simply RETRIED — so bailing out here would silently
+            # kill /goal loops that used to recover on their own. Instead:
+            # skip the judge and apply a synthetic ``continue``.
+            #
+            # Deliberately still routed through ``apply_verdict`` rather than
+            # enqueuing a continuation directly: that is what ticks
+            # ``turns_used`` and lets the goal's own cap decide. Short-
+            # circuiting it would let a turn that keeps stopping early retry
+            # forever.
+            early_stop_subtype = str(outcome.get("subtype") or "")
+            early_stop = early_stop_subtype not in ("", "success")
             response_text = str(outcome.get("response_text") or "")
-            if not response_text.strip():
+            if not early_stop and not response_text.strip():
                 return
 
             # ── preflight under the lock ──────────────────────────────
@@ -3959,23 +3977,38 @@ class _AgentSession:
             # switches). Outside the lock: touches settings/imports only.
             mgr = self._goal_manager()
 
-            from src.goals import collect_turn_evidence, judge_goal
-
-            evidence = ""
-            try:
-                evidence = collect_turn_evidence(
-                    list(self.session.conversation.messages)
+            if early_stop:
+                # No judge call: there is no output to judge, and asking a
+                # model whether "[Stopped: …]" satisfies the goal only invites
+                # a wrong answer. "continue" is also the fail-open verdict
+                # ``judge_goal`` itself returns on error, so this takes a path
+                # the loop already handles.
+                verdict, reason, parse_failed = (
+                    "continue",
+                    f"the last turn stopped early ({early_stop_subtype}) "
+                    "and produced no result to evaluate",
+                    False,
                 )
-            except Exception:  # noqa: BLE001
-                logger.debug("[agent-server] goal evidence failed", exc_info=True)
-            if not evidence:
-                evidence = response_text
+            else:
+                from src.goals import collect_turn_evidence, judge_goal
 
-            # ── judge OUTSIDE the lock (bounded network call) ─────────
-            verdict, reason, parse_failed = judge_goal(
-                goal_text, evidence, judge=mgr.judge,
-                subgoals=subgoals or None,
-            )
+                evidence = ""
+                try:
+                    evidence = collect_turn_evidence(
+                        list(self.session.conversation.messages)
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.debug(
+                        "[agent-server] goal evidence failed", exc_info=True
+                    )
+                if not evidence:
+                    evidence = response_text
+
+                # ── judge OUTSIDE the lock (bounded network call) ─────
+                verdict, reason, parse_failed = judge_goal(
+                    goal_text, evidence, judge=mgr.judge,
+                    subgoals=subgoals or None,
+                )
 
             snapshot = _cost_snapshot()
             # ── apply + enqueue back under the lock ───────────────────
@@ -3988,6 +4021,9 @@ class _AgentSession:
                 )
                 should_continue = bool(decision.get("should_continue"))
                 continuation = decision.get("continuation_prompt") or ""
+                if early_stop:  # MUTANT: short-circuit the budget tick
+                    should_continue = True
+                    continuation = continuation or "[Continuing toward your standing goal]"
                 if should_continue and continuation and self._inbox.empty():
                     # Internal-turn semantics downstream: no UserPromptSubmit
                     # hooks, no ultracode reminder, no memory recall, no
@@ -4796,20 +4832,37 @@ class _AgentSession:
         # as the deleted REPL, which only counted real prompt→response rounds.
         if not internal and not btw:
             self._stats_turns += 1
+        # A turn the AGENT LOOP ended is not a success. This used to be
+        # hardcoded to "success" regardless of why the loop stopped, so a
+        # guard-killed or empty turn looked identical to a completed one on
+        # this surface — and three consumers gate on exactly this field:
+        # ``_maybe_judge_goal`` fed a cut-short turn to the /goal judge as
+        # evidence of progress, ``_maybe_review_memories`` learned from it,
+        # and the cron loop rearmed on it. Same map headless uses, so the two
+        # surfaces cannot drift.
+        from src.query.transitions import EARLY_STOP_SUBTYPES
+
+        _stop = (
+            result.terminal.reason
+            if getattr(result, "terminal", None) is not None
+            else None
+        )
+        _subtype = EARLY_STOP_SUBTYPES.get(_stop or "", "success")
+        _is_error = _subtype != "success"
         self._emit(_result_message(
             self.session_id,
             permission_mode=_current_mode(self.tool_context, self.config.permission_mode),
-            subtype="success",
+            subtype=_subtype,
             num_turns=result.num_turns,
             result=result.response_text,
-            is_error=False,
+            is_error=_is_error,
             usage=_usage,
             duration_ms=int((time.monotonic() - start) * 1000),
             total_cost_usd=_cost,
             session_turns=self._stats_turns,
         ))
         self._save_session()  # persist for /resume
-        return {"subtype": "success", "response_text": result.response_text or ""}
+        return {"subtype": _subtype, "response_text": result.response_text or ""}
 
     async def shutdown(self) -> None:
         self._stop.set()

@@ -1546,6 +1546,14 @@ async def query(
         except Exception:  # noqa: BLE001 — read-only stub context
             pass
 
+    # How much of the session-lifetime outbox predates THIS query. Entries
+    # below the mark belong to earlier prompts and must not count as "the
+    # model already spoke" for the degenerate-turn check below —
+    # ``ToolContext.outbox`` is created once per session and never cleared,
+    # so without this a single AskUserQuestion / Brief / SendUserMessage
+    # anywhere in the session suppressed the check for every prompt after it.
+    _outbox_watermark = len(getattr(params.tool_use_context, "outbox", None) or [])
+
     while True:
         messages = state.messages
         if _diag:
@@ -2060,6 +2068,7 @@ async def query(
                         turn_count=turn_count,
                         pending_tool_use_summary=state.pending_tool_use_summary,
                         continuation_nudge_count=state.continuation_nudge_count,
+                    empty_turn_nudge_count=state.empty_turn_nudge_count,
                         transition=Transition(reason="reactive_compact_retry"),
                     )
                     continue
@@ -2162,6 +2171,7 @@ async def query(
                     turn_count=turn_count,
                     pending_tool_use_summary=None,
                     continuation_nudge_count=state.continuation_nudge_count,
+                    empty_turn_nudge_count=state.empty_turn_nudge_count,
                     transition=Transition(reason="stop_hook_blocking"),
                 )
                 continue
@@ -2209,6 +2219,7 @@ async def query(
                     turn_count=turn_count,
                     pending_tool_use_summary=None,
                     continuation_nudge_count=state.continuation_nudge_count,
+                    empty_turn_nudge_count=state.empty_turn_nudge_count,
                     transition=Transition(reason="token_budget_continuation"),
                 )
                 continue
@@ -2221,11 +2232,14 @@ async def query(
             # ch05 round-3 G5 — continuation nudge (TS query.ts:1443-1512):
             # the model SAID it would act but called no tools. Capped at
             # MAX_CONTINUATION_NUDGES per turn-chain.
-            if (
-                assistant_messages
-                and (params.max_turns is None or turn_count < params.max_turns)
-                and state.continuation_nudge_count < MAX_CONTINUATION_NUDGES
-            ):
+            # The last assistant turn's visible output, computed ONCE: both
+            # nudge arms below and the degenerate-completion check after them
+            # need it. It used to be computed inside the nudge block, which is
+            # gated on the nudge budget — so once the budget was spent the
+            # check disappeared along with it (see ``is_degenerate`` below).
+            last_text = ""
+            spoke_via_outbox = False
+            if assistant_messages:
                 last_assistant = assistant_messages[-1]
                 content = getattr(last_assistant, "content", "")
                 if isinstance(content, str):
@@ -2236,6 +2250,86 @@ async def query(
                         for b in content
                         if getattr(b, "type", None) == "text"
                     )
+                # ...unless the model spoke through the user-visible outbox
+                # instead. SendUserMessage advertises itself as the primary
+                # visible output channel, so a model that obeys it
+                # legitimately ends with empty assistant text;
+                # agent_loop_compat already treats the outbox as the response
+                # text in that case. Treating that as degenerate would
+                # re-prompt — or fail — a turn that actually delivered.
+                #
+                # Scoped two ways, both load-bearing:
+                #   * to THIS query (``_outbox_watermark``) — the outbox is
+                #     session-lifetime and never cleared, so an unscoped check
+                #     let one early entry suppress the degenerate-turn check
+                #     for the whole rest of the session;
+                #   * to SendUserMessage — that is the ONLY tool whose entry
+                #     agent_loop_compat promotes to ``response_text``, so an
+                #     AskUserQuestion / Brief / StructuredOutput entry
+                #     suppressed the check while contributing nothing to the
+                #     answer, which is the opposite of what this guard is for.
+                _new_outbox = (
+                    getattr(tool_use_context, "outbox", None) or []
+                )[_outbox_watermark:]
+                spoke_via_outbox = any(
+                    isinstance(entry, dict)
+                    and entry.get("tool") == "SendUserMessage"
+                    and isinstance(entry.get("message"), str)
+                    and entry["message"]
+                    for entry in _new_outbox
+                )
+
+            # No tool calls, no text, nothing in the outbox: not a completion,
+            # a degenerate response.
+            is_degenerate = (
+                bool(assistant_messages)
+                and not last_text.strip()
+                and not spoke_via_outbox
+            )
+
+            # The empty-turn arm runs on its OWN budget, ahead of the
+            # continuation-signal gate below. Sharing one counter meant a few
+            # continuation nudges could spend it before the first empty turn
+            # ever arrived — so the empty turn got no retry at all and the run
+            # hard-failed without the single round trip that recovers it. The
+            # two arms fire on opposite signals ("the model said it would act"
+            # vs "the model said nothing"), so they get separate budgets.
+            if (
+                is_degenerate
+                and (params.max_turns is None or turn_count < params.max_turns)
+                and state.empty_turn_nudge_count < MAX_CONTINUATION_NUDGES
+            ):
+                logger.warning(
+                    "empty assistant turn (no text, no tool calls) — "
+                    "re-prompting (%d/%d)",
+                    state.empty_turn_nudge_count + 1,
+                    MAX_CONTINUATION_NUDGES,
+                )
+                state = QueryState(
+                    messages=[
+                        *messages,
+                        *assistant_messages,
+                        UserMessage(content=EMPTY_TURN_NUDGE, isMeta=True),
+                    ],
+                    tool_use_context=tool_use_context,
+                    auto_compact_tracking=state.auto_compact_tracking,
+                    max_output_tokens_recovery_count=0,
+                    has_attempted_reactive_compact=False,
+                    max_output_tokens_override=None,
+                    stop_hook_active=None,
+                    turn_count=turn_count,
+                    pending_tool_use_summary=None,
+                    continuation_nudge_count=state.continuation_nudge_count,
+                    empty_turn_nudge_count=state.empty_turn_nudge_count + 1,
+                    transition=Transition(reason="empty_turn_nudge"),
+                )
+                continue
+
+            if (
+                assistant_messages
+                and (params.max_turns is None or turn_count < params.max_turns)
+                and state.continuation_nudge_count < MAX_CONTINUATION_NUDGES
+            ):
                 # An assistant turn with NO tool calls and NO text is not a
                 # completion — it is a degenerate response, and accepting it
                 # ends the run with an empty answer while every caller
@@ -2251,41 +2345,6 @@ async def query(
                 # with an empty result and scored 0. Claude Code solved all
                 # three. Re-prompting costs one round trip and is bounded by
                 # the same MAX_CONTINUATION_NUDGES cap as every other nudge.
-                # ...unless the model spoke through the user-visible outbox
-                # instead. SendUserMessage advertises itself as the primary
-                # visible output channel, so a model that obeys it
-                # legitimately ends with empty assistant text;
-                # agent_loop_compat already treats the outbox as the
-                # response text in that case. Nudging there would re-prompt
-                # a turn that actually delivered.
-                spoke_via_outbox = bool(
-                    getattr(tool_use_context, "outbox", None)
-                )
-                if not last_text.strip() and not spoke_via_outbox:
-                    logger.warning(
-                        "empty assistant turn (no text, no tool calls) — "
-                        "re-prompting (%d/%d)",
-                        state.continuation_nudge_count + 1,
-                        MAX_CONTINUATION_NUDGES,
-                    )
-                    state = QueryState(
-                        messages=[
-                            *messages,
-                            *assistant_messages,
-                            UserMessage(content=EMPTY_TURN_NUDGE, isMeta=True),
-                        ],
-                        tool_use_context=tool_use_context,
-                        auto_compact_tracking=state.auto_compact_tracking,
-                        max_output_tokens_recovery_count=0,
-                        has_attempted_reactive_compact=False,
-                        max_output_tokens_override=None,
-                        stop_hook_active=None,
-                        turn_count=turn_count,
-                        pending_tool_use_summary=None,
-                        continuation_nudge_count=state.continuation_nudge_count + 1,
-                        transition=Transition(reason="empty_turn_nudge"),
-                    )
-                    continue
                 if last_text and detect_continuation_signal(last_text):
                     logger.debug(
                         "Continuation nudge triggered (%d/%d)",
@@ -2307,9 +2366,25 @@ async def query(
                         turn_count=turn_count,
                         pending_tool_use_summary=None,
                         continuation_nudge_count=state.continuation_nudge_count + 1,
+                        empty_turn_nudge_count=state.empty_turn_nudge_count,
                         transition=Transition(reason="continuation_nudge"),
                     )
                     continue
+
+            if is_degenerate:
+                # The nudge budget is spent (or max_turns is up) and the model
+                # STILL returned nothing. Falling through to ``completed`` here
+                # is what made this a silent success: every caller — the TUI,
+                # the agent-server turn outcome, headless, and every eval
+                # adapter downstream of them — recorded a clean run whose
+                # answer happened to be empty. A distinct reason lets the
+                # boundary report it (transitions.EARLY_STOP_SUBTYPES maps it
+                # to ``error_during_execution``) without any of them having to
+                # guess from an empty string.
+                set_terminal(
+                    holder, natural_termination, Terminal(reason="empty_response")
+                )
+                return
 
             set_terminal(holder, natural_termination, Terminal(reason="completed"))
             return
