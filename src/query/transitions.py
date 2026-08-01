@@ -34,6 +34,41 @@ TerminalReason = Literal[
 ]
 
 
+# Terminal reasons where the AGENT LOOP ended the run rather than the model
+# finishing, mapped to the reference's result subtypes (QueryEngine.ts:891
+# ``error_max_turns``, :1142 ``error_during_execution``). Every one of these
+# used to be reported as ``subtype: "success", is_error: false`` by headless,
+# so a batch runner recorded a clean completion that merely scored zero.
+#
+# Lives here, beside the taxonomy it is keyed on, rather than in an
+# entrypoint: more than one surface has to agree on it (headless today, the
+# agent-server's turn outcome next), and importing an entrypoint for one dict
+# would invert the layering.
+#
+# Accounts for the WHOLE taxonomy above. Not mapped, deliberately:
+#   * ``completed``                     — the normal path;
+#   * ``aborted_streaming`` / ``aborted_tools`` / ``model_error`` — re-raised
+#     by agent_loop_compat, so they already reach exit 130 / 1 and the
+#     cancelled / error subtypes;
+#   * ``hook_stopped`` / ``stop_hook_prevented`` — a hook refusing to continue
+#     is the operator's own policy working as configured, not the harness
+#     cutting a run short. Neither can fire without an installed hook that
+#     emits those signals. Listed rather than omitted so the exclusion reads
+#     as a decision.
+#
+# ``blocking_limit`` and ``prompt_too_long`` are the worst of the set: their
+# explanation goes to ``last_api_error_text``, which agent_loop_compat only
+# surfaces as response_text for ``tool_failure_loop``, so those runs reported
+# success with an EMPTY result — a clean completion with no evidence at all.
+EARLY_STOP_SUBTYPES: dict[str, str] = {
+    "tool_failure_loop": "error_during_execution",
+    "blocking_limit": "error_during_execution",
+    "prompt_too_long": "error_during_execution",
+    "image_error": "error_during_execution",
+    "max_turns": "error_max_turns",
+}
+
+
 @dataclass(frozen=True)
 class Transition:
     reason: ContinueReason

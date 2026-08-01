@@ -641,6 +641,33 @@ class Clawcodex(BaseInstalledAgent):
         events = self._parse_stream_events()
         result_event = self._last_result_event(events)
 
+        # Surface an EARLY STOP where a human reading the trial will see it.
+        # clawcodex now marks a run the agent loop cut short with a non-success
+        # result subtype (``error_during_execution`` when the tool-failure-loop
+        # guard trips, ``error_max_turns`` on the turn ceiling) instead of
+        # reporting success. Nothing here read ``subtype``, so without this the
+        # stream log became honest while the trial output stayed silent — the
+        # exact workflow that let 31-second guard kills pass as clean runs
+        # scoring zero.
+        #
+        # Deliberately NOT raised as an exception: Harbor would record an
+        # ``exception.txt``, and compare_trajectories.py excludes those trials
+        # as "killed by harness", censoring the runs this is meant to reveal.
+        # A log line plus a metadata field keeps the trial in the dataset AND
+        # visible.
+        stop_subtype = (result_event or {}).get("subtype")
+        if isinstance(stop_subtype, str) and stop_subtype not in ("", "success"):
+            self.logger.warning(
+                f"clawcodex ended this trial early: {stop_subtype} "
+                f"(the model did not finish the task)"
+            )
+            # Also machine-readable, so a sweep can count early stops without
+            # re-parsing every stream log. Lands in the trial's result.json.
+            context.metadata = {
+                **(context.metadata or {}),
+                "clawcodex_stop_subtype": stop_subtype,
+            }
+
         try:
             trajectory, totals = self._build_trajectory(events, result_event)
         except Exception as exc:  # noqa: BLE001 — never fail a trial over this

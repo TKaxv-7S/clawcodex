@@ -60,7 +60,34 @@ from src.query.agent_loop_compat import (
 )
 from src.tool_system.context import ToolContext
 from src.tool_system.defaults import build_default_registry
+from src.query.transitions import EARLY_STOP_SUBTYPES
 from src.utils.abort_controller import AbortController, AbortError
+
+
+def _json_result_subtype(
+    exit_code: int, early_stop_subtype: str | None
+) -> tuple[str, bool]:
+    """``(subtype, is_error)`` for a headless result event.
+
+    One function so the two can never disagree. They did once: ``is_error``
+    was computed from its own expression, which let ``cancelled`` come back
+    flagged as an error — contradicting the deliberate pairing (a user
+    interrupt is not a failure). Precedence: a cancel or a hard error beats an
+    early stop, because those already carry a non-zero exit code and the
+    caller needs the stronger signal.
+
+    Pure and total, so the cross product is pinned by a table test rather
+    than by constructing each runtime state — the ``cancelled`` + early-stop
+    row in particular is otherwise reachable only through a /goal
+    continuation.
+    """
+    if exit_code == 130:
+        subtype = "cancelled"
+    elif exit_code != 0:
+        subtype = "error"
+    else:
+        subtype = early_stop_subtype or "success"
+    return subtype, subtype not in ("success", "cancelled")
 
 
 OUTPUT_FORMATS = ("text", "json", "stream-json")
@@ -548,6 +575,12 @@ def run_headless(options: HeadlessOptions) -> int:
     num_turns_total = 0
     usage_total: dict[str, int] = {}
     exit_code = 0
+    # Terminal reason of the LAST agent-loop turn, when it stopped the run
+    # early rather than the model finishing (``tool_failure_loop``,
+    # ``max_turns``). Drives the result event's subtype below so a run the
+    # harness cut short is distinguishable from a completed one. ``None``
+    # for a normal completion.
+    early_stop_reason: str | None = None
     start = time.monotonic()
 
     # Two-mode SIGINT handler:
@@ -730,6 +763,34 @@ def run_headless(options: HeadlessOptions) -> int:
                             ),
                             num_turns=compat_result.num_turns,
                         )
+                        # Why the loop stopped, for the result event below.
+                        # ``AgentLoopResult`` deliberately keeps its legacy
+                        # shape, so the reason is read off ``compat_result``
+                        # here rather than widening that type (which the TUI
+                        # also consumes).
+                        #
+                        # STICKY, and only for reasons we actually report: one
+                        # terminal result event covers the WHOLE run (there is
+                        # no per-turn result path), and every other field on it
+                        # — num_turns_total, usage_total, aggregate_text — is
+                        # cumulative. Overwriting each iteration would let a
+                        # normal completion on prompt N+1 erase an early stop
+                        # on prompt N, which is the same silent success this
+                        # code exists to remove, just harder to see: with
+                        # ``--input-format stream-json`` the explanation stays
+                        # in ``result`` while ``subtype`` claims success.
+                        # Among mapped reasons this is LAST-wins, not
+                        # first-wins ("sticky" reads as first-wins to most
+                        # people): two early stops in one run report the
+                        # later one. Immaterial — both are early stops and
+                        # ``is_error`` is True either way.
+                        _reason = (
+                            compat_result.terminal.reason
+                            if compat_result.terminal is not None
+                            else None
+                        )
+                        if _reason in EARLY_STOP_SUBTYPES:
+                            early_stop_reason = _reason
                     finally:
                         # Flip BEFORE the outer except block can run so a
                         # SIGINT landing between ``run_agent_loop`` returning
@@ -848,17 +909,59 @@ def run_headless(options: HeadlessOptions) -> int:
     duration_ms = int((time.monotonic() - start) * 1000)
     final_text = "\n\n".join(t for t in aggregate_text if t).strip()
 
+    # An early stop is NOT a success. The agent loop can end a run itself —
+    # the tool-failure-loop guard tripping, or max_turns — and in both cases
+    # the model never finished the task. Both used to report
+    # ``subtype: "success", is_error: false``, so a batch runner recorded a
+    # clean completion that merely happened to score zero. That is how the
+    # guard's 31-second kills went unnoticed until someone read the raw
+    # trajectories: the harness said the run was fine.
+    #
+    # Subtypes are the reference's (QueryEngine.ts:891 ``error_max_turns``,
+    # :1142 ``error_during_execution``), and like the reference the event
+    # keeps its full metrics block — usage, num_turns, the stop explanation
+    # as ``result``. Eval adapters read token counts off this event
+    # (eval/harbor/clawcodex_agent.py), so SUPPRESSING it or replacing it
+    # with a bare error would trade a silent-success bug for a missing-data
+    # bug.
+    #
+    # The process EXIT CODE deliberately stays 0 — a documented divergence
+    # from the reference, which exits ``is_error ? 1 : 0``
+    # (typescript/src/cli/print.ts:1069-1070). Not an ordering constraint:
+    # the emission gate could be moved and the code bumped afterwards. The
+    # reason is what a non-zero code means downstream. Harbor raises
+    # ``NonZeroAgentExitCodeError`` on it, the trial records an
+    # ``exception.txt``, and ``eval/harbor/compare_trajectories.py`` then
+    # treats that trial as "killed by harness" and EXCLUDES it from the step
+    # means. Flipping the code would right-censor every guard trip and every
+    # max_turns run straight out of the comparison — deleting precisely the
+    # trials this change exists to make visible, and reintroducing the
+    # denominator corruption that once inverted a whole iteration's metrics.
+    #
+    # So the signal lives in the event (subtype + is_error), which callers
+    # can act on without any run disappearing from the dataset. Anyone
+    # tempted to "finish the job" by bumping the exit code should re-read
+    # this paragraph first.
+    early_stop_subtype = EARLY_STOP_SUBTYPES.get(early_stop_reason or "")
+
     if options.output_format == "text":
         if final_text:
             stdout.write(final_text + "\n")
             stdout.flush()
+        if early_stop_subtype is not None:
+            # The default format has no structured field to carry this, and
+            # it is what a plain shell caller sees. The reference prints an
+            # equivalent line (print.ts:1041-1047). stderr so it never
+            # pollutes piped stdout.
+            stderr.write(
+                f"[clawcodex] run stopped early ({early_stop_reason}); "
+                "the task was not completed\n"
+            )
+            stderr.flush()
     elif options.output_format == "json":
-        if exit_code == 0:
-            json_subtype = "success"
-        elif exit_code == 130:
-            json_subtype = "cancelled"
-        else:
-            json_subtype = "error"
+        json_subtype, json_is_error = _json_result_subtype(
+            exit_code, early_stop_subtype
+        )
         payload = {
             "type": "result",
             "subtype": json_subtype,
@@ -870,14 +973,15 @@ def run_headless(options: HeadlessOptions) -> int:
             "duration_ms": duration_ms,
             "usage": usage_total or None,
             "tool_events": aggregate_tool_events,
-            "is_error": exit_code not in (0, 130),
+            "is_error": json_is_error,
         }
         stdout.write(ndjson_safe_dumps(payload) + "\n")
         stdout.flush()
     elif options.output_format == "stream-json" and writer is not None and exit_code == 0:
         writer.write(
             ResultEvent(
-                subtype="success",
+                subtype=early_stop_subtype or "success",
+                is_error=early_stop_subtype is not None,
                 session_id=session.session_id,
                 num_turns=num_turns_total,
                 result=final_text,
