@@ -371,10 +371,22 @@ def _attachments_since_last_exit(messages: list[Any]) -> int:
 # ---------------------------------------------------------------------------
 
 
+NON_INTERACTIVE_PLAN_ADDENDUM = (
+    "NOTE — non-interactive session: the AskUserQuestion and ExitPlanMode "
+    "tools are NOT available here, so ignore every instruction above to end "
+    "your turn by calling them. There is no user to answer a question or "
+    "approve a plan. Instead: write the finished plan to the plan file and "
+    "then end your turn normally. Do not attempt to call either tool — they "
+    "are not registered, and the call will fail."
+)
+
+
 def build_plan_mode_attachments(
     messages: list[Any],
     permission_mode: str,
     agent_id: str | None = None,
+    *,
+    interactive: bool = True,
 ) -> list[str]:
     """Return the plan-mode attachment TEXTS due this turn (possibly empty).
 
@@ -420,6 +432,17 @@ def build_plan_mode_attachments(
         )
     else:
         attachments.append(build_plan_mode_sparse_text(plan_file_path))
+
+    if not interactive:
+        # The ported texts above are verbatim TS and name AskUserQuestion /
+        # ExitPlanMode as the only two ways to end a turn. Headless
+        # unregisters both (there is no surface to answer a question or
+        # approve a plan), so on that surface the instructions point at tools
+        # the model cannot call. Appended rather than edited into the prompt
+        # so the port stays verbatim and the correction is visible as its own
+        # statement. Reached only via ``--permission-mode plan`` headlessly,
+        # since nothing else puts a non-interactive session in plan mode.
+        attachments.append(NON_INTERACTIVE_PLAN_ADDENDUM)
 
     return attachments
 

@@ -39,7 +39,9 @@ class _ToolUse:
 _SCHEMA = {"type": "object", "properties": {}, "additionalProperties": True}
 
 
-def _stub_tool(name: str, call_fn, *, max_chars: float = 30_000, backfill=None):
+def _stub_tool(
+    name: str, call_fn, *, max_chars: float = 30_000, backfill=None, aliases=()
+):
     return build_tool(
         name=name,
         input_schema=_SCHEMA,
@@ -48,6 +50,7 @@ def _stub_tool(name: str, call_fn, *, max_chars: float = 30_000, backfill=None):
         description="stub",
         max_result_size_chars=max_chars,
         backfill_observable_input=backfill,
+        aliases=aliases,
     )
 
 
@@ -315,25 +318,62 @@ class TestCallInputDiscipline(_Base):
 
 
 class TestBaseToolFallback(_Base):
-    def test_pool_hidden_tool_resolves_via_base_list(self):
+    def test_base_list_fallback_resolves_a_deprecated_ALIAS(self):
+        """The fallback exists for old transcripts calling a renamed tool."""
         ran: list = []
 
         def call(_inp, _ctx):
             ran.append(True)
-            return ToolResult(name="HiddenTool", output="ran")
+            return ToolResult(name="NewName", output="ran")
 
-        hidden = _stub_tool("HiddenTool", call)
-        fake_registry = SimpleNamespace(list_tools=lambda: [hidden])
+        renamed = _stub_tool("NewName", call, aliases=("OldName",))
+        fake_registry = SimpleNamespace(list_tools=lambda: [renamed])
 
         ctx = self._context([])  # NOT in the active pool
         with mock.patch(
             "src.tool_system.defaults.build_default_registry",
             return_value=fake_registry,
         ):
-            updates = self._execute(ctx, _ToolUse("HiddenTool", {}))
-        self.assertTrue(ran)
+            updates = self._execute(ctx, _ToolUse("OldName", {}))
+        self.assertTrue(ran, "a deprecated alias must still resolve")
         blocks = self._result_blocks(updates)
         self.assertFalse(blocks[0].get("is_error", False))
+
+    def test_base_list_fallback_REJECTS_a_removed_primary_name(self):
+        """REVERSED deliberately — this test previously asserted that a tool
+        absent from the active pool still resolved by its PRIMARY name.
+
+        TS accepts the fallback only when the called name is one of the
+        tool's aliases (toolExecution.ts:415-426, "Only fall back for tools
+        where the name matches an alias, not the primary name"); the port had
+        dropped that half. The old premise -- that tools can be "hidden" from
+        the pool and need rescuing -- is false: ``options.tools`` is the full
+        registry (agent_loop_compat.py sets it from ``tool_registry
+        .list_tools()``), so deferred tools are present and resolve at the
+        primary lookup. What the loose fallback actually did was silently
+        undo every deliberate removal: ``--disallowed-tools``, headless's
+        unregistering of tools that need a user, and the
+        ALL_AGENT_DISALLOWED_TOOLS subagent containment list.
+        """
+        ran: list = []
+
+        def call(_inp, _ctx):
+            ran.append(True)
+            return ToolResult(name="RemovedTool", output="ran")
+
+        removed = _stub_tool("RemovedTool", call)
+        fake_registry = SimpleNamespace(list_tools=lambda: [removed])
+
+        ctx = self._context([])  # removed from the active pool
+        with mock.patch(
+            "src.tool_system.defaults.build_default_registry",
+            return_value=fake_registry,
+        ):
+            updates = self._execute(ctx, _ToolUse("RemovedTool", {}))
+        self.assertFalse(ran, "a removed tool must not execute via fallback")
+        blocks = self._result_blocks(updates)
+        self.assertTrue(blocks[0].get("is_error"))
+        self.assertIn("No such tool available", str(blocks[0].get("content", "")))
 
     def test_unknown_name_still_errors(self):
         ctx = self._context([])
@@ -353,7 +393,7 @@ class TestBaseToolFallback(_Base):
             ran.append(True)
             return ToolResult(name="HiddenTool", output="ran")
 
-        hidden = _stub_tool("HiddenTool", call)
+        hidden = _stub_tool("HiddenTool", call, aliases=("HiddenAlias",))
         fake_registry = SimpleNamespace(list_tools=lambda: [hidden])
 
         def deny_all(*_a, **_k):
@@ -367,7 +407,7 @@ class TestBaseToolFallback(_Base):
             async def drive():
                 updates = []
                 async for update in run_tool_use(
-                    _ToolUse("HiddenTool", {}),
+                    _ToolUse("HiddenAlias", {}),
                     AssistantMessage(content="using a tool"),
                     deny_all,
                     ctx,

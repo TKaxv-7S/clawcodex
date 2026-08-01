@@ -128,9 +128,18 @@ class TestSuccessReset(unittest.TestCase):
                 _update(state, blocks, [_result("t1", "same err")]).tripped
             )
 
-    def test_within_batch_failures_accumulate_per_failure(self):
-        """Counters increment per FAILURE, not per batch (guard:96-107):
-        2 identical failures in one batch + 1 in the next → trips at 3."""
+    def test_within_batch_failures_accumulate_per_batch(self):
+        """Counters increment per BATCH, not per failure.
+
+        REVERSED deliberately. This test previously asserted the TS behavior
+        (increment per failing block: 2 identical failures in one batch put
+        the counter at 2, so one more failure tripped it). That is what let a
+        model issuing parallel calls trip the guard on its first mistake —
+        see the divergence note in the guard's module docstring and
+        TestPerBatchCounting below. Two identical failures in ONE batch are
+        now one unsuccessful batch, so the counter reads 1 and it takes two
+        further failing batches to trip.
+        """
         state = create_tool_failure_loop_guard_state()
         first_batch_blocks = [_tool_use("t1", "Bash"), _tool_use("t2", "Bash")]
         decision = _update(
@@ -139,9 +148,13 @@ class TestSuccessReset(unittest.TestCase):
             [_result("t1", "same err"), _result("t2", "same err")],
         )
         self.assertFalse(decision.tripped)
-        self.assertEqual(state.signature_counts["Bash\0same err"], 2)
+        self.assertEqual(state.signature_counts["Bash\0same err"], 1)
         decision = _update(
             state, [_tool_use("t3", "Bash")], [_result("t3", "same err")]
+        )
+        self.assertFalse(decision.tripped, "second failing batch is still under 3")
+        decision = _update(
+            state, [_tool_use("t4", "Bash")], [_result("t4", "same err")]
         )
         self.assertTrue(decision.tripped)
         self.assertEqual(decision.kind, "signature")
@@ -403,3 +416,150 @@ class TestHarvest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPerBatchCounting(unittest.TestCase):
+    """A single assistant turn is ONE batch, however many calls it contains.
+
+    Documented divergence from TS (see the module docstring): TS increments
+    once per failing BLOCK, so ``threshold`` parallel calls that all fail the
+    same way trip the guard inside a single turn — punishing the model's first
+    mistake, and punishing it only because the calls were issued in parallel
+    rather than one at a time. Measured on terminal-bench 2.1: two runs ended
+    after 3 and 4 turns (31s / 38s) on a plain ``python3: command not found``,
+    while a serially-calling model hit the same missing interpreter on the same
+    task images and was never stopped.
+    """
+
+    def test_parallel_batch_of_threshold_failures_does_not_trip(self):
+        """THE regression guard. Three identical failures in ONE turn."""
+        state = create_tool_failure_loop_guard_state()
+        blocks = [_tool_use(f"t{i}", "Bash") for i in range(3)]
+        results = [
+            _result(f"t{i}", "bash: line 1: python3: command not found")
+            for i in range(3)
+        ]
+        decision = _update(state, blocks, results, threshold=3)
+        self.assertFalse(
+            decision.tripped,
+            "one batch of parallel failures is one unsuccessful batch, not three",
+        )
+
+    def test_still_trips_across_consecutive_batches(self):
+        """The guard's actual purpose must survive: a real loop is caught."""
+        state = create_tool_failure_loop_guard_state()
+        for i in range(2):
+            d = _update(
+                state,
+                [_tool_use(f"a{i}", "Bash")],
+                [_result(f"a{i}", "bash: python3: command not found")],
+                threshold=3,
+            )
+            self.assertFalse(d.tripped, f"batch {i} should not trip yet")
+        d = _update(
+            state,
+            [_tool_use("a2", "Bash")],
+            [_result("a2", "bash: python3: command not found")],
+            threshold=3,
+        )
+        self.assertTrue(d.tripped, "third consecutive failing batch must trip")
+        self.assertEqual(d.kind, "signature")
+
+    def test_parallel_batches_still_trip_one_batch_later(self):
+        """Batching delays a real loop by at most the batch count, never
+        prevents it — the change is permissive, not disabling."""
+        state = create_tool_failure_loop_guard_state()
+        tripped_on = None
+        for batch in range(5):
+            blocks = [_tool_use(f"b{batch}_{i}", "Bash") for i in range(3)]
+            results = [
+                _result(f"b{batch}_{i}", "bash: python3: command not found")
+                for i in range(3)
+            ]
+            if _update(state, blocks, results, threshold=3).tripped:
+                tripped_on = batch
+                break
+        self.assertEqual(tripped_on, 2, "should trip on the 3rd failing batch")
+
+    def test_distinct_signatures_in_one_batch_each_count_once(self):
+        """Dedupe is per KEY, not per batch: different tools failing
+        differently must still each accrue their own count."""
+        state = create_tool_failure_loop_guard_state()
+        blocks = [_tool_use("x1", "Bash"), _tool_use("x2", "Read")]
+        results = [
+            _result("x1", "bash: python3: command not found"),
+            _result("x2", "No such file or directory"),
+        ]
+        _update(state, blocks, results, threshold=3)
+        self.assertEqual(len(state.persistent_signature_counts), 2)
+        self.assertTrue(
+            all(v == 1 for v in state.persistent_signature_counts.values()),
+            f"each distinct signature counts once: {state.persistent_signature_counts}",
+        )
+
+    def test_advisory_not_duplicated_within_a_batch(self):
+        """One advisory per key per batch, not one per failing block."""
+        state = create_tool_failure_loop_guard_state()
+        _update(
+            state,
+            [_tool_use("p0", "Bash")],
+            [_result("p0", "bash: python3: command not found")],
+            threshold=3,
+        )
+        blocks = [_tool_use(f"p1_{i}", "Bash") for i in range(3)]
+        results = [
+            _result(f"p1_{i}", "bash: python3: command not found") for i in range(3)
+        ]
+        d = _update(state, blocks, results, threshold=3)
+        self.assertFalse(d.tripped)
+        self.assertEqual(len(d.advisories), 1, f"got {d.advisories}")
+
+    def test_success_in_the_same_batch_still_resets(self):
+        """Unrelated pre-existing behavior must be untouched."""
+        state = create_tool_failure_loop_guard_state()
+        _update(
+            state,
+            [_tool_use("s0", "Bash")],
+            [_result("s0", "bash: python3: command not found")],
+            threshold=3,
+        )
+        d = _update(
+            state,
+            [_tool_use("s1", "Bash"), _tool_use("s2", "Bash")],
+            [
+                _result("s1", "bash: python3: command not found"),
+                _result("s2", "ok", is_error=False),
+            ],
+            threshold=3,
+        )
+        self.assertFalse(d.tripped)
+        self.assertEqual(state.signature_counts, {})
+
+
+class TestCounterKindsAreIndependent(unittest.TestCase):
+    """The per-batch dedupe namespaces its key by counter KIND.
+
+    Without that, a path and an error category that stringify the same would
+    share one dedupe slot and the second would be silently skipped. It is
+    constructible: an ``Edit`` whose ``file_path`` is literally "NotFound"
+    failing with an ENOENT-shaped error yields path key "NotFound" and
+    category key "NotFound".
+    """
+
+    def test_same_string_as_path_and_category_counts_separately(self):
+        state = create_tool_failure_loop_guard_state()
+        blocks = [_tool_use("k1", "Edit", {"file_path": "NotFound"})]
+        results = [_result("k1", "No such file or directory")]
+        _update(state, blocks, results, threshold=3)
+        self.assertEqual(
+            list(state.path_counts.values()), [1], state.path_counts
+        )
+        self.assertTrue(
+            state.persistent_signature_counts,
+            "the signature counter must have advanced too, not been deduped "
+            "away by the path counter sharing its key string",
+        )
+        # THE assertion that catches the collision: the path loop claims the
+        # "NotFound" slot first, so a category bump sharing one namespace
+        # would return without incrementing and leave this dict empty.
+        self.assertEqual(state.category_counts, {"NotFound": 1})

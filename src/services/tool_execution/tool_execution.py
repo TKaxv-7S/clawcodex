@@ -57,16 +57,37 @@ async def run_tool_use(
     tool = find_tool_by_name(tool_use_context.options.tools, tool_name)
 
     if tool is None:
-        # Old-transcript names and pool-hidden tools resolve through the
-        # FULL base-tool list (TS toolExecution.ts:335-341:
-        # findToolByName(getAllBaseTools(), toolName)). Not a permission
-        # bypass: resolution still runs downstream for the resolved tool.
+        # DEPRECATED ALIASES ONLY. TS resolves the fallback from the full
+        # base-tool list but then accepts it only when the called name is one
+        # of that tool's ``aliases`` (toolExecution.ts:415-426, "Only fall
+        # back for tools where the name matches an alias, not the primary
+        # name") — e.g. an old transcript calling ``KillShell``, now an alias
+        # for ``TaskStop``.
+        #
+        # The port dropped that second half, so ANY unregistered tool
+        # resolved by primary name and executed. That silently un-did every
+        # deliberate removal: ``--disallowed-tools`` / ``--allowed-tools``
+        # dropped a tool from the advertised schema while leaving it fully
+        # callable, and headless's ``remove_tool`` calls for the tools that
+        # cannot work without a user (AskUserQuestion, and the plan-mode pair
+        # below) hid them without disabling them. That mattered because the
+        # plan-mode reminder NAMES ExitPlanMode, so the model was prompted
+        # into calling a tool the harness had removed, and got the raw
+        # "Exit plan mode?" dialog question back as a tool error.
+        #
+        # Restoring the guard makes removal mean removal. A genuinely unknown
+        # or removed name now falls through to the "No such tool available"
+        # branch below, which is a message the model can act on.
         try:
             from src.tool_system.defaults import build_default_registry
 
-            tool = find_tool_by_name(
+            fallback = find_tool_by_name(
                 build_default_registry().list_tools(), tool_name
             )
+            if fallback is not None and tool_name in (
+                getattr(fallback, "aliases", None) or ()
+            ):
+                tool = fallback
         except Exception:
             pass
 
