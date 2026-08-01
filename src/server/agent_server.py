@@ -3949,8 +3949,31 @@ class _AgentSession:
             # ``turns_used`` and lets the goal's own cap decide. Short-
             # circuiting it would let a turn that keeps stopping early retry
             # forever.
+            # WHICH non-success outcomes continue the goal, and which end it.
+            #
+            # Only the ones the AGENT LOOP itself produced — the values in
+            # EARLY_STOP_SUBTYPES. Those mean "the model did not finish", so
+            # retrying is right and matches what happened before the subtype
+            # was derived at all (the turn arrived as "success", was judged
+            # not-done, and the loop retried).
+            #
+            # ``cancelled`` and ``error`` are NOT those. ``_run_turn`` returns
+            # ``cancelled`` on AbortError and ``error`` on an exception, so a
+            # blanket ``!= "success"`` made ESC during a /goal loop re-enqueue
+            # the work the user just killed, and made a provider 5xx retry up
+            # to the goal's whole turn budget. Same category as the hook stops
+            # deliberately excluded from the map: the USER or the PROVIDER
+            # ended the turn, not the harness cutting it short.
+            from src.query.transitions import EARLY_STOP_SUBTYPES
+
+            _loop_early_stops = frozenset(EARLY_STOP_SUBTYPES.values())
             early_stop_subtype = str(outcome.get("subtype") or "")
-            early_stop = early_stop_subtype not in ("", "success")
+            if (
+                early_stop_subtype != "success"
+                and early_stop_subtype not in _loop_early_stops
+            ):
+                return
+            early_stop = early_stop_subtype in _loop_early_stops
             response_text = str(outcome.get("response_text") or "")
             if not early_stop and not response_text.strip():
                 return
@@ -4021,9 +4044,6 @@ class _AgentSession:
                 )
                 should_continue = bool(decision.get("should_continue"))
                 continuation = decision.get("continuation_prompt") or ""
-                if early_stop:  # MUTANT: short-circuit the budget tick
-                    should_continue = True
-                    continuation = continuation or "[Continuing toward your standing goal]"
                 if should_continue and continuation and self._inbox.empty():
                     # Internal-turn semantics downstream: no UserPromptSubmit
                     # hooks, no ultracode reminder, no memory recall, no
