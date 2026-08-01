@@ -776,3 +776,148 @@ def test_a_normal_turn_still_reaches_the_goal_judge():
         sess, {"subtype": "success", "response_text": "I fixed the tests."}
     )
     assert judged, "a completed turn must still be judged"
+
+
+def _bare_goal_session(max_turns: int = 3):
+    """A session with only the I/O collaborators stubbed.
+
+    NOT the ``_spawned`` harness: that runs a live worker which CONSUMES
+    ``_inbox``, so queue assertions race it.
+    """
+    import queue
+    import threading
+
+    from src.goals import GoalManager
+    from src.server import agent_server as srv
+
+    sess = object.__new__(srv._AgentSession)
+    sess._lock = threading.RLock()
+    sess._inbox = queue.Queue()
+    sess.session_id = "s"
+    sess.provider = None
+    sess.session = None
+    sess._emit = lambda *a, **k: None
+    sess._save_session = lambda: None
+    sess._goal_snapshot_locked = lambda: (None, 0)
+    sess._goal_mgr = GoalManager("s", judge=None, default_max_turns=max_turns)
+    sess._goal_mgr.set("make the tests pass")
+    sess._goal_manager = lambda: sess._goal_mgr
+    return sess, srv
+
+
+def test_early_stop_continuations_are_bounded_by_the_goal_cap():
+    """A turn that keeps stopping early must NOT retry forever.
+
+    THE safety property of the auto-continue design, and the one my own
+    mutation testing missed: forcing ``should_continue = True`` after
+    ``apply_verdict`` (bypassing the ``turns_used`` tick) passed every other
+    test in this file, because they assert only that *something* was enqueued
+    — which a direct enqueue satisfies just as well.
+
+    This drives the real ``_maybe_continue_goal`` repeatedly against a cap of
+    3 and asserts the continuations actually STOP. It fails if the budget tick
+    is bypassed.
+    """
+    sess, srv = _bare_goal_session(max_turns=3)
+    outcome = {
+        "subtype": "error_during_execution",
+        "response_text": "[Stopped: repeated tool failures detected]",
+    }
+
+    continuations = 0
+    for _ in range(10):
+        srv._AgentSession._maybe_continue_goal(sess, outcome)
+        drained = 0
+        while not sess._inbox.empty():
+            sess._inbox.get_nowait()
+            drained += 1
+        if not drained:
+            break
+        continuations += 1
+
+    assert continuations >= 1, "an early stop must continue the goal at least once"
+    assert continuations < 10, (
+        f"the goal cap must bound early-stop retries; got {continuations} "
+        "continuations — the budget tick is being bypassed"
+    )
+    assert not sess._goal_mgr.is_active(), (
+        "the goal must end once its turn budget is spent"
+    )
+
+
+def test_user_cancel_and_provider_error_do_not_continue_the_goal():
+    """``cancelled`` / ``error`` are the USER or the PROVIDER ending the turn,
+    not the harness cutting it short — so they must END the goal loop, not
+    retry it. A blanket ``!= "success"`` made ESC during a /goal loop
+    re-enqueue the work the user had just killed, and made a provider 5xx
+    retry up to the whole turn budget.
+
+    Paired with a POSITIVE control below, because this harness swallows
+    exceptions: a "nothing was enqueued" assertion would otherwise pass for
+    the wrong reason if a stub were missing.
+    """
+    for subtype in ("cancelled", "error"):
+        sess, srv = _bare_goal_session()
+        srv._AgentSession._maybe_continue_goal(
+            sess, {"subtype": subtype, "response_text": ""}
+        )
+        assert sess._inbox.empty(), f"{subtype} must not continue the goal"
+
+    # POSITIVE CONTROL: the same harness DOES enqueue for a loop early stop,
+    # so the assertions above are meaningful rather than vacuous.
+    sess, srv = _bare_goal_session()
+    srv._AgentSession._maybe_continue_goal(
+        sess,
+        {"subtype": "error_during_execution", "response_text": "[Stopped: x]"},
+    )
+    assert not sess._inbox.empty(), (
+        "control failed — the harness enqueues nothing at all, so the "
+        "negative assertions above prove nothing"
+    )
+
+
+def test_early_stop_respects_the_verdict_decision():
+    """The continuation must come FROM ``apply_verdict``, not around it.
+
+    THE test the shipped defect needed. A stray
+
+        if early_stop:
+            should_continue = True
+
+    after ``apply_verdict`` was committed by accident and reached main. It is
+    not a runaway — ``apply_verdict`` still runs before it, so ``turns_used``
+    still ticks and the goal still deactivates at its cap (measured: 3
+    continuations instead of 2 at cap=3). That is exactly why a cap test does
+    NOT catch it, and why asserting "something was enqueued" does not either.
+
+    What it does break is authority: the goal's own decision to stop is
+    overridden, buying one extra model turn past the budget. So assert the
+    negative directly — when the verdict says stop, nothing is enqueued.
+    """
+    sess, srv = _bare_goal_session()
+
+    real_apply = sess._goal_mgr.apply_verdict
+
+    def _stop(*a, **k):
+        decision = dict(real_apply(*a, **k))
+        decision["should_continue"] = False
+        return decision
+
+    sess._goal_mgr.apply_verdict = _stop
+    srv._AgentSession._maybe_continue_goal(
+        sess,
+        {"subtype": "error_during_execution", "response_text": "[Stopped: x]"},
+    )
+    assert sess._inbox.empty(), (
+        "a continuation was enqueued despite apply_verdict saying stop — the "
+        "verdict is being overridden rather than honoured"
+    )
+
+    # POSITIVE CONTROL: the same harness DOES enqueue when the verdict allows,
+    # so the assertion above cannot pass vacuously.
+    sess2, _ = _bare_goal_session()
+    srv._AgentSession._maybe_continue_goal(
+        sess2,
+        {"subtype": "error_during_execution", "response_text": "[Stopped: x]"},
+    )
+    assert not sess2._inbox.empty(), "control failed — nothing ever enqueues"
