@@ -464,3 +464,328 @@ def test_headless_passes_provider_is_explicit_when_provider_flagged(
         )
     )
     assert calls and calls[0]["provider_is_explicit"] is True
+
+
+# ---------------------------------------------------------------------------
+# early-stop visibility — a run the harness cut short is not a "success"
+
+
+def _stub_loop(monkeypatch, *, reason, text="stopped", turns=3):
+    """Make the agent loop return a Terminal instead of a normal completion.
+
+    Patches the seam headless actually consumes. Driving a real guard trip
+    would need a tool registry with failing tools; what is under test here is
+    the mapping from terminal reason to result subtype, not the guard.
+    """
+    from src.query.agent_loop_compat import AgentLoopRunResult
+    from src.query.transitions import Terminal
+
+    async def fake_loop(*_a, **_k):
+        return AgentLoopRunResult(
+            response_text=text,
+            usage={"input_tokens": 100, "output_tokens": 20},
+            num_turns=turns,
+            terminal=Terminal(reason=reason) if reason else None,
+        )
+
+    monkeypatch.setattr(headless_mod, "run_query_as_agent_loop", fake_loop)
+
+
+def _result_event(raw: str) -> dict:
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        obj = json.loads(line)
+        if obj.get("type") == "result":
+            return obj
+    raise AssertionError(f"no result event in output: {raw!r}")
+
+
+@pytest.mark.parametrize(
+    "reason,expected_subtype",
+    [
+        ("tool_failure_loop", "error_during_execution"),
+        ("max_turns", "error_max_turns"),
+        # blocking_limit / prompt_too_long are the worst of the set: their
+        # explanation never reaches response_text, so they reported success
+        # with an EMPTY result — a clean completion with no evidence at all.
+        ("blocking_limit", "error_during_execution"),
+        ("prompt_too_long", "error_during_execution"),
+        ("image_error", "error_during_execution"),
+    ],
+)
+def test_early_stop_is_not_reported_as_success_stream_json(
+    fake_wiring, tmp_path, monkeypatch, reason, expected_subtype
+):
+    """THE regression guard.
+
+    A tool-failure-loop trip or a max_turns stop used to emit
+    ``subtype: "success", is_error: false``, so a batch runner recorded a
+    clean completion that merely scored zero — which is how 31-second guard
+    kills went unnoticed on terminal-bench until the raw trajectories were
+    read. Subtypes mirror the reference (QueryEngine.ts:891, :1142).
+    """
+    _stub_loop(monkeypatch, reason=reason)
+    stdout = io.StringIO()
+    run_headless(
+        HeadlessOptions(
+            prompt="hi",
+            output_format="stream-json",
+            stdout=stdout,
+            stderr=io.StringIO(),
+            workspace_root=tmp_path,
+        )
+    )
+    event = _result_event(stdout.getvalue())
+    assert event["subtype"] == expected_subtype
+    assert event["is_error"] is True
+
+
+@pytest.mark.parametrize(
+    "reason,expected_subtype",
+    [
+        ("tool_failure_loop", "error_during_execution"),
+        ("max_turns", "error_max_turns"),
+    ],
+)
+def test_early_stop_subtype_in_json_output(
+    fake_wiring, tmp_path, monkeypatch, reason, expected_subtype
+):
+    _stub_loop(monkeypatch, reason=reason)
+    stdout = io.StringIO()
+    run_headless(
+        HeadlessOptions(
+            prompt="hi",
+            output_format="json",
+            stdout=stdout,
+            stderr=io.StringIO(),
+            workspace_root=tmp_path,
+        )
+    )
+    event = _result_event(stdout.getvalue())
+    assert event["subtype"] == expected_subtype
+    assert event["is_error"] is True
+
+
+def test_early_stop_keeps_the_full_metrics_block(
+    fake_wiring, tmp_path, monkeypatch
+):
+    """Eval adapters read tokens/cost off this event.
+
+    Suppressing it, or replacing it with a bare error, would trade a
+    silent-success bug for a missing-data bug — the reference keeps usage and
+    num_turns on error_during_execution too (QueryEngine.ts:1142-1153).
+    """
+    _stub_loop(monkeypatch, reason="tool_failure_loop", text="Stopped: repeated tool failures detected.", turns=4)
+    stdout = io.StringIO()
+    run_headless(
+        HeadlessOptions(
+            prompt="hi",
+            output_format="stream-json",
+            stdout=stdout,
+            stderr=io.StringIO(),
+            workspace_root=tmp_path,
+        )
+    )
+    event = _result_event(stdout.getvalue())
+    assert event["usage"], "usage must survive — adapters read tokens from here"
+    assert event["num_turns"] == 4
+    assert "repeated tool failures" in event["result"], (
+        "the stop explanation must still reach the caller"
+    )
+
+
+def test_normal_completion_still_reports_success(
+    fake_wiring, tmp_path, monkeypatch
+):
+    """The default path must be untouched: no terminal, no early-stop flag."""
+    _stub_loop(monkeypatch, reason=None, text="all done")
+    stdout = io.StringIO()
+    code = run_headless(
+        HeadlessOptions(
+            prompt="hi",
+            output_format="stream-json",
+            stdout=stdout,
+            stderr=io.StringIO(),
+            workspace_root=tmp_path,
+        )
+    )
+    event = _result_event(stdout.getvalue())
+    assert event["subtype"] == "success"
+    assert event["is_error"] is False
+    assert code == 0
+
+
+def test_early_stop_does_not_change_the_exit_code(
+    fake_wiring, tmp_path, monkeypatch
+):
+    """Deliberate: the process exit code stays 0.
+
+    NOT because the emission is gated on ``exit_code == 0`` — that gate is
+    movable. Because Harbor raises ``NonZeroAgentExitCodeError`` on a
+    non-zero code, the trial then records an ``exception.txt``, and
+    ``eval/harbor/compare_trajectories.py`` treats such trials as "killed by
+    harness" and EXCLUDES them from the step means. Flipping the code would
+    right-censor every guard trip out of the very comparison this change
+    exists to make honest.
+
+    A documented divergence from the reference, which exits
+    ``is_error ? 1 : 0`` (print.ts:1069-1070). The trade: a shell caller
+    doing ``clawcodex -p ...; echo $?`` cannot detect an early stop, and must
+    read the result event's subtype instead.
+    """
+    _stub_loop(monkeypatch, reason="tool_failure_loop")
+    stdout = io.StringIO()
+    code = run_headless(
+        HeadlessOptions(
+            prompt="hi",
+            output_format="stream-json",
+            stdout=stdout,
+            stderr=io.StringIO(),
+            workspace_root=tmp_path,
+        )
+    )
+    assert code == 0
+    assert _result_event(stdout.getvalue())["subtype"] == "error_during_execution"
+
+
+@pytest.mark.parametrize("reason", ["hook_stopped", "stop_hook_prevented", "completed"])
+def test_deliberately_unmapped_terminals_stay_success(
+    fake_wiring, tmp_path, monkeypatch, reason
+):
+    """Hook stops are the operator's own policy working as configured, not the
+    harness cutting a run short. Pinned so the exclusion reads as a decision
+    rather than an oversight — and so widening the map is a conscious act."""
+    _stub_loop(monkeypatch, reason=reason)
+    stdout = io.StringIO()
+    run_headless(
+        HeadlessOptions(
+            prompt="hi",
+            output_format="stream-json",
+            stdout=stdout,
+            stderr=io.StringIO(),
+            workspace_root=tmp_path,
+        )
+    )
+    assert _result_event(stdout.getvalue())["subtype"] == "success"
+
+
+def test_early_stop_survives_a_later_normal_prompt(fake_wiring, tmp_path, monkeypatch):
+    """Multi-prompt stream-json: ONE result event covers the whole run.
+
+    Every other field on it is cumulative (num_turns, usage, text), so an
+    early stop on prompt N must not be erased by prompt N+1 completing
+    normally — otherwise the explanation sits in ``result`` while ``subtype``
+    claims success, which is the original bug wearing a disguise.
+    """
+    from src.query.agent_loop_compat import AgentLoopRunResult
+    from src.query.transitions import Terminal
+
+    calls = {"n": 0}
+
+    async def fake_loop(*_a, **_k):
+        calls["n"] += 1
+        first = calls["n"] == 1
+        return AgentLoopRunResult(
+            response_text="[Stopped: repeated tool failures detected]" if first else "ok",
+            usage={"input_tokens": 10, "output_tokens": 2},
+            num_turns=2,
+            terminal=Terminal(reason="tool_failure_loop") if first else Terminal(reason="completed"),
+        )
+
+    monkeypatch.setattr(headless_mod, "run_query_as_agent_loop", fake_loop)
+    stdin = io.StringIO(
+        json.dumps({"type": "user", "message": {"role": "user", "content": "one"}}) + "\n"
+        + json.dumps({"type": "user", "message": {"role": "user", "content": "two"}}) + "\n"
+    )
+    stdout = io.StringIO()
+    run_headless(
+        HeadlessOptions(
+            prompt=None,
+            input_format="stream-json",
+            output_format="stream-json",
+            stdin=stdin,
+            stdout=stdout,
+            stderr=io.StringIO(),
+            workspace_root=tmp_path,
+        )
+    )
+    assert calls["n"] == 2, "both prompts must have run"
+    event = _result_event(stdout.getvalue())
+    assert event["subtype"] == "error_during_execution", (
+        "an early stop anywhere in the run must survive to the result event"
+    )
+    assert event["is_error"] is True
+
+
+def test_cancelled_is_not_flagged_as_an_error(fake_wiring, tmp_path, monkeypatch):
+    """Exit-code precedence: 130 must still win, and cancelled must NOT be
+    flagged is_error — the pairing is deliberate."""
+    from src.query.agent_loop_compat import AgentLoopRunResult
+    from src.query.transitions import Terminal
+    from src.utils.abort_controller import AbortError
+
+    async def fake_loop(*_a, **_k):
+        raise AbortError("user_interrupt")
+
+    monkeypatch.setattr(headless_mod, "run_query_as_agent_loop", fake_loop)
+    stdout = io.StringIO()
+    code = run_headless(
+        HeadlessOptions(
+            prompt="hi",
+            output_format="json",
+            stdout=stdout,
+            stderr=io.StringIO(),
+            workspace_root=tmp_path,
+        )
+    )
+    event = _result_event(stdout.getvalue())
+    assert code == 130
+    assert event["subtype"] == "cancelled"
+    assert event["is_error"] is False, "cancelled is not an error"
+
+
+def test_text_format_reports_the_early_stop_on_stderr(
+    fake_wiring, tmp_path, monkeypatch
+):
+    """The default format has no structured field, and it is what a plain
+    shell caller sees."""
+    _stub_loop(monkeypatch, reason="tool_failure_loop", text="stopped")
+    stderr = io.StringIO()
+    run_headless(
+        HeadlessOptions(
+            prompt="hi",
+            output_format="text",
+            stdout=io.StringIO(),
+            stderr=stderr,
+            workspace_root=tmp_path,
+        )
+    )
+    assert "stopped early" in stderr.getvalue()
+    assert "tool_failure_loop" in stderr.getvalue()
+
+
+@pytest.mark.parametrize(
+    "exit_code,early,expected",
+    [
+        (0, None, ("success", False)),
+        (0, "error_during_execution", ("error_during_execution", True)),
+        (0, "error_max_turns", ("error_max_turns", True)),
+        (130, None, ("cancelled", False)),
+        # THE collision: an early stop earlier in the run, then a cancel.
+        # Reachable at runtime only via a /goal continuation, which is why
+        # the derivation is pinned as a pure function instead.
+        (130, "error_during_execution", ("cancelled", False)),
+        (1, None, ("error", True)),
+        (1, "error_during_execution", ("error", True)),
+    ],
+)
+def test_subtype_and_is_error_never_disagree(exit_code, early, expected):
+    """``is_error`` must be derived from the subtype, never recomputed.
+
+    An independent expression let ``cancelled`` come back flagged as an
+    error, contradicting the deliberate pairing that a user interrupt is not
+    a failure.
+    """
+    assert headless_mod._json_result_subtype(exit_code, early) == expected
