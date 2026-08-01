@@ -246,6 +246,46 @@ def run_headless(options: HeadlessOptions) -> int:
     # headlessly. ``_noop_ask_user`` stays as a backstop for any path that
     # still reaches the context hook.
     tool_registry.remove_tool("AskUserQuestion")
+    # The plan-mode pair goes for the SAME reason, and this is the reference
+    # behavior rather than a divergence. ExitPlanMode is the other
+    # ``requires_user_interaction`` tool, which makes it bypass-immune
+    # (permissions/check.py) — so its ask always resolves to a DENY here:
+    # under bypass the handler is None and ``handle_permission_ask`` denies
+    # with the ask's own message, and otherwise ``_auto_deny_permission_handler``
+    # denies outright. On the bypass path (what the benchmarks run) that
+    # message is the raw dialog question, "Exit plan mode?", handed to the
+    # model as a tool error it cannot possibly act on. The model then cannot leave plan
+    # mode, so every subsequent write is refused: EnterPlanMode auto-allows
+    # (plan_mode.py — TS Tool.ts default), and the exit is unreachable.
+    #
+    # Upstream hit exactly this and fixed it the same way. ExitPlanModeV2Tool
+    # .ts:167-178 disables the tool when the user is not watching the TUI
+    # ("The plan-approval dialog would hang. Paired with the same gate on
+    # EnterPlanMode so plan mode isn't a trap."), and EnterPlanModeTool.ts:
+    # 52-63 disables entry "so plan mode isn't a trap the model can enter but
+    # never leave." Headless is that condition in its strongest form: there is
+    # no terminal at all. Their gate keys off ``--channels``; ours keys off
+    # being headless.
+    #
+    # Measured on terminal-bench 2.1 (2026-08-01): 41 ExitPlanMode calls, a
+    # 100% error rate, across 16 of 32 trials — 5.7% of the entire tool budget
+    # spent on a round trip that could never complete. Model-agnostic by
+    # construction: it removes an unusable tool rather than special-casing any
+    # model, and a model that never calls the pair is unaffected.
+    #
+    # ``--permission-mode plan`` headlessly still works: the mode is set from
+    # options, not by the tool, so a plan-only run starts in plan mode, writes
+    # its plan, and ends the turn. It simply cannot exit plan mode and start
+    # executing — the point of asking for plan mode non-interactively.
+    #
+    # That holds only BECAUSE of ``NON_INTERACTIVE_PLAN_ADDENDUM``
+    # (context_system/plan_mode.py): the ported plan-mode reminder names
+    # AskUserQuestion and ExitPlanMode as the only two ways to end a turn, so
+    # without the addendum this removal would leave the model instructed to
+    # call tools that are not registered. Delete one and the other stops
+    # making sense.
+    tool_registry.remove_tool("ExitPlanMode")
+    tool_registry.remove_tool("EnterPlanMode")
     # Canonicalize BOTH sets up front (before either filter runs) so an alias
     # form (e.g. --disallowed-tools KillShell) resolves while its tool is still
     # registered.

@@ -11,6 +11,32 @@ patterns recognize this runtime's native error strings —
 ``NoSuchTool`` bucket TS assigns its "No such tool available" text, and
 ``No such file or directory`` (Python ``OSError`` phrasing, no ENOENT
 literal) maps to ``NotFound``. All other patterns are verbatim TS.
+
+Second divergence (intentional): counters increment once per BATCH per
+distinct key. TS iterates its ``failures`` array and increments once per
+failing BLOCK (toolFailureLoopGuard.ts:137,173,201), so a single assistant
+turn that issues ``threshold`` parallel calls which all fail the same way
+trips the guard immediately -- on the model's FIRST mistake, with no chance
+to correct. Measured on terminal-bench 2.1: that ended two runs after 3 and
+4 turns (31s / 38s), each on a plain ``python3: command not found`` the
+model would have recovered from, while a serially-calling model on the same
+task images hit the same missing interpreter and was never stopped. The
+penalty landed purely on HOW a model batches its calls, not on whether it
+was actually looping, so the guard was measuring the wrong thing. Per-batch
+counting matches this module's own stated contract ("consecutive tool
+batches").
+
+The change is strictly permissive: every counter is pointwise <= its old
+value at every step (all reset paths are untouched) and every trip predicate
+is monotone in the counters, so it can only DELAY a trip, never cause one
+that would not have happened. How much later, measured by differential fuzz
+against the old behavior at threshold 3: a homogeneous loop trips at most
+``threshold - 1`` batches later; once failures vary or successes interleave
+-- which clear ``signature_counts`` / ``category_counts`` -- the delay grows
+(observed up to ~20 batches at a 25% interleaved success rate). The trip is
+always eventually reached, never suppressed, and ``max_turns`` bounds the
+worst case. Deliberate: a model succeeding a quarter of the time is making
+progress, not looping.
 """
 from __future__ import annotations
 
@@ -124,10 +150,32 @@ def update_tool_failure_loop_guard(
             if key.startswith(prefix):
                 del state.persistent_signature_counts[key]
 
+    # One increment per BATCH per distinct key, not one per failing block.
+    # See the "Divergence vs TS" note in the module docstring: an assistant
+    # turn that issues N parallel calls which all fail the same way is ONE
+    # unsuccessful batch, not N consecutive ones.
+    bumped_this_batch: set[tuple[str, str]] = set()
+
+    def _bump(counts: dict[str, int], key: str, kind: str) -> tuple[int, bool]:
+        """Increment ``counts[key]`` at most once per batch.
+
+        Returns ``(count, first_in_batch)``. For a repeat the CURRENT count
+        comes back, so a duplicate can never push a counter over the
+        threshold, while a first occurrence that legitimately reaches it
+        still trips on this batch. ``first_in_batch`` lets the caller emit
+        one advisory per key rather than one per failing block.
+        """
+        if (kind, key) in bumped_this_batch:
+            return counts.get(key, 0), False
+        bumped_this_batch.add((kind, key))
+        return _increment_counter(counts, key), True
+
     advisories: list[str] = []
     for tool_name, error_category, _path in failures:
-        count = _increment_counter(
-            state.persistent_signature_counts, f"{tool_name}\0{error_category}"
+        count, first = _bump(
+            state.persistent_signature_counts,
+            f"{tool_name}\0{error_category}",
+            "persistent",
         )
         if count >= resolved_threshold:
             return ToolFailureLoopGuardDecision(
@@ -141,7 +189,7 @@ def update_tool_failure_loop_guard(
                     tool_name=tool_name, error_category=error_category,
                 ),
             )
-        if resolved_threshold > 1 and count == resolved_threshold - 1:
+        if first and resolved_threshold > 1 and count == resolved_threshold - 1:
             advisories.append(_create_advisory_message(
                 threshold=resolved_threshold,
                 tool_name=tool_name,
@@ -151,7 +199,7 @@ def update_tool_failure_loop_guard(
     for tool_name, error_category, path in failures:
         if not path or path in successful_mutation_paths:
             continue
-        path_count = _increment_counter(state.path_counts, path)
+        path_count, _ = _bump(state.path_counts, path, "path")
         if path_count >= resolved_threshold:
             return ToolFailureLoopGuardDecision(
                 tripped=True, kind="path", threshold=resolved_threshold,
@@ -171,10 +219,12 @@ def update_tool_failure_loop_guard(
         )
 
     for tool_name, error_category, path in failures:
-        signature_count = _increment_counter(
-            state.signature_counts, f"{tool_name}\0{error_category}"
+        signature_count, _ = _bump(
+            state.signature_counts, f"{tool_name}\0{error_category}", "signature"
         )
-        category_count = _increment_counter(state.category_counts, error_category)
+        category_count, _ = _bump(
+            state.category_counts, error_category, "category"
+        )
         if signature_count >= resolved_threshold:
             return ToolFailureLoopGuardDecision(
                 tripped=True,

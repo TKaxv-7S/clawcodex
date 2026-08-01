@@ -591,8 +591,31 @@ async def run_query_as_agent_loop(
             pc = getattr(tool_context, "permission_context", None)
             mode = str(getattr(pc, "mode", "default")) if pc is not None else "default"
             agent_id = getattr(tool_context, "agent_id", None)
+            # Whether the plan-mode reminder may tell the model to end its
+            # turn via AskUserQuestion / ExitPlanMode. Headless unregisters
+            # both, so on that surface the ported instructions would point at
+            # tools that are not callable; read off the live registry rather
+            # than a mode flag so it tracks whatever this surface actually
+            # registered (an explicit --disallowed-tools too).
+            #
+            # Read from ``tool_registry``, NOT ``tool_context.options.tools``:
+            # the latter defaults to [] and is not populated until query()
+            # assigns it (query.py:1529) from this same registry — which
+            # happens BELOW, at the run_query call. Reading options.tools here
+            # returns [] on the FIRST query of every session, so the TUI would
+            # get the non-interactive addendum on exactly the turn that
+            # carries the full plan text, then silently correct itself from
+            # turn 2. tool_registry is populated now and is what becomes
+            # params.tools, so the two can never disagree.
+            from src.tool_system.build_tool import find_tool_by_name
+
+            _interactive = (
+                find_tool_by_name(tool_registry.list_tools(), "ExitPlanMode")
+                is not None
+            )
             texts = build_plan_mode_attachments(
                 messages_for_query, mode, agent_id=agent_id,
+                interactive=_interactive,
             )
             texts += build_plan_mode_exit_attachment(mode, agent_id=agent_id)
             for text in texts:
