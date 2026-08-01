@@ -600,7 +600,15 @@ class TestContinuationNudge(_Base):
         )
         # Bounded by the shared nudge cap — never an unbounded retry loop.
         self.assertEqual(assistant_count, MAX_CONTINUATION_NUDGES + 1)
-        self.assertEqual(terminal.reason, "completed")
+        # REVERSED deliberately: this asserted ``"completed"``, which is the
+        # second half of the very bug the docstring above describes. Re-
+        # prompting fixed the case where the model recovers; when it does NOT
+        # recover, ``completed`` still told every caller the run finished
+        # cleanly with an empty answer. ``empty_response`` is the port-only
+        # terminal state for that (declared in
+        # transitions.PYTHON_ONLY_TERMINAL_REASONS) and maps to a non-success
+        # result subtype at the boundary.
+        self.assertEqual(terminal.reason, "empty_response")
 
     def test_whitespace_only_turn_is_also_reprompted(self):
         """Whitespace is as empty as empty — the check strips before testing."""
@@ -716,6 +724,68 @@ class TestClearAndCompactionState(_Base):
         self.assertTrue(get_pending_post_compaction())
         self.assertTrue(consume_post_compaction())  # consume-once works
         self.assertFalse(get_pending_post_compaction())
+
+
+
+
+
+
+class TestEmptyResponseTerminal(unittest.TestCase):
+    """The degenerate-completion terminal state and its blast radius."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.workspace = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_a_recovering_model_still_completes(self):
+        """The nudge working is the common case and must not regress: an
+        empty turn followed by a real answer is a normal completion."""
+        provider = _provider([_completion(""), _completion("Here is the answer.")])
+        _msgs, terminal = _run(run_query(_params(self.workspace, provider)))
+        self.assertEqual(terminal.reason, "completed")
+
+    def test_a_normal_answer_is_never_empty_response(self):
+        provider = _provider([_completion("Done. Everything is complete.")])
+        _msgs, terminal = _run(run_query(_params(self.workspace, provider)))
+        self.assertEqual(terminal.reason, "completed")
+
+    def test_empty_response_is_reported_not_silent(self):
+        """The whole point: it must map to a non-success result subtype."""
+        from src.query.transitions import EARLY_STOP_SUBTYPES
+
+        self.assertEqual(
+            EARLY_STOP_SUBTYPES.get("empty_response"), "error_during_execution"
+        )
+
+    def test_empty_response_carries_an_explanation(self):
+        """``result: ""`` is indistinguishable from a terse-but-real answer,
+        and that ambiguity is what let these runs pass as clean successes."""
+        import asyncio
+
+        from src.query.agent_loop_compat import run_query_as_agent_loop
+        from src.tool_system.context import ToolContext
+        from src.tool_system.defaults import build_default_registry
+
+        provider = _provider([_completion("")])
+        registry = build_default_registry()
+        result = asyncio.run(
+            run_query_as_agent_loop(
+                initial_messages=[UserMessage(content="do the thing")],
+                provider=provider,
+                tool_registry=registry,
+                tool_context=ToolContext(workspace_root=self.workspace),
+                system_prompt="s",
+                max_turns=10,
+            )
+        )
+        self.assertEqual(result.terminal.reason, "empty_response")
+        self.assertIn("empty response", result.response_text.lower())
+        # Must not claim prompting that may not have happened (max_turns route).
+        self.assertNotIn("repeated prompting", result.response_text.lower())
+        self.assertTrue(result.response_text.strip())
 
 
 if __name__ == "__main__":

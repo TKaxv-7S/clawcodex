@@ -31,7 +31,26 @@ TerminalReason = Literal[
     "hook_stopped",
     "max_turns",
     "tool_failure_loop",
+    # PYTHON-ONLY (see PYTHON_ONLY_TERMINAL_REASONS below).
+    "empty_response",
 ]
+
+#: Terminal reasons this port has that the TS reference does not.
+#:
+#: The parity test (tests/parity/test_query_state_parity.py) asserts the TS
+#: taxonomy is a SUBSET of ours rather than equal to it, and that every extra
+#: appears here. So an extension is allowed but must be declared — a reason
+#: that drifts in silently still fails, and one TS has that we dropped still
+#: fails.
+#:
+#: ``empty_response`` — an assistant turn with no tool calls, no text, and
+#: nothing in the outbox, after the continuation-nudge budget is spent. The
+#: nudge arm that detects it is itself Python-only (TS's continuation nudge
+#: gates on non-empty text, so it cannot see this case), which is why the
+#: terminal state for it has no TS counterpart either. Without it the run
+#: fell through to ``completed`` and every caller recorded a clean success
+#: with an empty answer.
+PYTHON_ONLY_TERMINAL_REASONS: frozenset[str] = frozenset({"empty_response"})
 
 
 # Terminal reasons where the AGENT LOOP ended the run rather than the model
@@ -62,6 +81,7 @@ TerminalReason = Literal[
 # success with an EMPTY result — a clean completion with no evidence at all.
 EARLY_STOP_SUBTYPES: dict[str, str] = {
     "tool_failure_loop": "error_during_execution",
+    "empty_response": "error_during_execution",
     "blocking_limit": "error_during_execution",
     "prompt_too_long": "error_during_execution",
     "image_error": "error_during_execution",
@@ -145,4 +165,12 @@ class QueryState:
     # when the model keeps matching continuation signals without tool calls.
     # Mirrors TS State.continuationNudgeCount at query.ts:218.
     continuation_nudge_count: int = 0
+    #: Separate budget for the EMPTY-turn nudge. Deliberately not shared with
+    #: ``continuation_nudge_count``: the two arms fire on different signals
+    #: (that one on "the model said it would act", this one on "the model said
+    #: nothing at all"), and sharing meant a few continuation nudges could
+    #: exhaust the budget before the first empty turn, so the empty turn was
+    #: never re-prompted and the run hard-failed without the one retry that
+    #: recovers it. Same cap.
+    empty_turn_nudge_count: int = 0
     transition: Transition | None = None

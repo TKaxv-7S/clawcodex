@@ -549,3 +549,230 @@ async def test_notification_turn_is_internal_no_ultracode_reminder(tmp_path):
         turn = _last_user_message(_RECORDED_TURNS[0])
         assert "background tasks you launched have finished" in turn
         assert "Ultracode is on for this session" not in turn
+
+
+class _EmptyProvider:
+    """Always returns a degenerate turn: no text, no tool calls.
+
+    Drives the agent loop into ``Terminal(reason="empty_response")`` after the
+    empty-turn retry budget is spent — a real early stop, produced by the real
+    loop, rather than a stubbed terminal.
+    """
+
+    def __init__(self, api_key=None, base_url=None, model=None):
+        self.model = model or "fake"
+
+    def chat(self, messages, tools=None, **kw):
+        from src.providers.base import ChatResponse
+
+        return ChatResponse(
+            content="",
+            model=self.model,
+            usage={"input_tokens": 3, "output_tokens": 0},
+            finish_reason="stop",
+            tool_uses=None,
+        )
+
+    def chat_stream_response(self, *a, **kw):  # force fallback to chat()
+        raise NotImplementedError
+
+
+async def test_turn_outcome_reflects_an_early_stop(tmp_path):
+    """A turn the agent loop cut short must not be reported as a success.
+
+    ``_run_turn`` hardcoded ``subtype="success"`` for the post-loop outcome
+    regardless of why the loop stopped, so on the TUI / VS Code path a
+    guard-killed or empty turn was indistinguishable from a completed one.
+    Three consumers gate on this field: ``_maybe_judge_goal`` fed such a turn
+    to the /goal judge as evidence of progress, ``_maybe_review_memories``
+    learned from it, and the cron loop rearmed on it.
+
+    BEHAVIOURAL on purpose. The first version of this test asserted on
+    ``inspect.getsource`` strings and passed against an implementation that
+    computed the right subtype and then discarded it — source archaeology
+    cannot tell "derives the subtype" from "derives it and throws it away".
+    """
+    async with _spawned(tmp_path, _EmptyProvider) as (handle, gen):
+        await handle.send_to_agent(
+            {"type": "user", "message": {"role": "user", "content": "go"}}
+        )
+        result = None
+        for _ in range(60):
+            msg = await asyncio.wait_for(gen.__anext__(), timeout=15)
+            if msg.get("type") == "result":
+                result = msg
+                break
+        assert result is not None, "no result frame emitted"
+        assert result["subtype"] == "error_during_execution", (
+            f"an early stop must not report success; got {result['subtype']!r}"
+        )
+        assert result["is_error"] is True
+        assert "empty response" in str(result.get("result", "")).lower(), (
+            "the explanation must reach the caller, not an empty string"
+        )
+
+
+async def test_a_normal_turn_still_reports_success(tmp_path):
+    """The default path must be untouched."""
+    async with _spawned(tmp_path, _TextProvider) as (handle, gen):
+        await handle.send_to_agent(
+            {"type": "user", "message": {"role": "user", "content": "hi"}}
+        )
+        result = None
+        for _ in range(60):
+            msg = await asyncio.wait_for(gen.__anext__(), timeout=15)
+            if msg.get("type") == "result":
+                result = msg
+                break
+        assert result is not None
+        assert result["subtype"] == "success"
+        assert result["is_error"] is False
+
+
+async def test_early_stop_map_excludes_the_finished_reasons(tmp_path):
+    """The map is the single source both surfaces read, so pin its shape:
+    reasons meaning "the model finished" must be absent so they fall through
+    to the success default."""
+    from src.query.transitions import EARLY_STOP_SUBTYPES
+
+    for reason in ("completed", "hook_stopped", "stop_hook_prevented"):
+        assert reason not in EARLY_STOP_SUBTYPES, reason
+    for subtype in EARLY_STOP_SUBTYPES.values():
+        assert subtype != "success"
+
+
+def test_early_stop_goal_verdict_is_continue_and_consumes_budget():
+    """A /goal loop must AUTO-CONTINUE past a cut-short turn, not die.
+
+    Two halves, and the second is what keeps it safe:
+
+    1. The turn is not judged — there is no output to weigh, and feeding the
+       "[Stopped: …]" sentinel to the judge is how a cut-short turn gets
+       mistaken for progress. A synthetic ``continue`` stands in, which is the
+       same fail-open verdict ``judge_goal`` returns on its own errors.
+    2. It still routes through ``apply_verdict``, so ``turns_used`` ticks and
+       the goal's own cap bounds it. Enqueuing a continuation directly would
+       let a turn that keeps stopping early retry forever.
+
+    Regression context: before the turn subtype was derived from the terminal
+    reason, a max_turns turn reached the judge as "success", was judged
+    not-done, and the loop retried. Skipping it outright would have silently
+    killed loops that used to recover.
+    """
+    from src.goals import GoalManager
+
+    mgr = GoalManager("wf_test", judge=None, default_max_turns=3)
+    mgr.set("make the tests pass")
+
+    seen = []
+    for _ in range(6):
+        if not mgr.is_active():
+            break
+        decision = mgr.apply_verdict(
+            "continue",
+            "the last turn stopped early (error_during_execution) and "
+            "produced no result to evaluate",
+            False,
+        )
+        seen.append(decision["should_continue"])
+
+    assert seen and seen[0] is True, (
+        "an early stop must continue the goal loop, not end it"
+    )
+    assert False in seen or not mgr.is_active(), (
+        "the loop must still be bounded by the goal's turn cap — an "
+        "always-early-stopping turn cannot retry forever"
+    )
+    assert len(seen) <= 4, f"cap not enforced: {len(seen)} iterations"
+
+
+def test_early_stop_enqueues_a_goal_continuation():
+    """BEHAVIOURAL: drive ``_maybe_continue_goal`` itself with a cut-short turn.
+
+    The contract test above pins that ``apply_verdict("continue")`` continues
+    and stays bounded, but it would still pass if ``_maybe_continue_goal``
+    bailed out before ever producing that verdict — which is exactly what the
+    first version of this change did. This asserts the continuation actually
+    lands in the inbox, and that NO judge was consulted (there is no output to
+    judge, and asking about a "[Stopped: …]" sentinel invites a wrong answer).
+
+    Driven against a bare session with the I/O collaborators stubbed rather
+    than the ``_spawned`` harness: that one runs a live worker thread which
+    CONSUMES the inbox, so asserting on the queue would race it.
+    """
+    import queue
+    import threading
+
+    from src.goals import GoalManager
+    from src.server import agent_server as srv
+
+    sess = object.__new__(srv._AgentSession)
+    sess._lock = threading.RLock()
+    sess._inbox = queue.Queue()
+    sess.session_id = "s"
+    sess.provider = None
+    sess.session = None
+    sess._emit = lambda *a, **k: None
+    sess._save_session = lambda: None
+    sess._goal_snapshot_locked = lambda: (None, 0)
+    sess._goal_mgr = GoalManager("s", judge=None, default_max_turns=5)
+    sess._goal_mgr.set("make the tests pass")
+
+    judged = []
+    sess._goal_mgr.judge = lambda *a, **k: judged.append(a) or "DONE"
+    # ``_goal_manager()`` rebinds ``.judge`` on every call (so a mid-goal
+    # /model switch is picked up), which would clobber the stub above.
+    sess._goal_manager = lambda: sess._goal_mgr
+
+    srv._AgentSession._maybe_continue_goal(
+        sess,
+        {
+            "subtype": "error_during_execution",
+            "response_text": "[Stopped: repeated tool failures detected]",
+        },
+    )
+
+    assert not judged, (
+        "a cut-short turn must not be handed to the judge as evidence"
+    )
+    queued = []
+    while not sess._inbox.empty():
+        queued.append(sess._inbox.get_nowait())
+    assert any(isinstance(i, dict) and i.get("__goal__") for i in queued), (
+        "the goal loop must AUTO-CONTINUE past an early stop, not die "
+        f"silently; inbox={queued!r}"
+    )
+
+
+def test_a_normal_turn_still_reaches_the_goal_judge():
+    """The default path must be untouched: a real answer IS judged."""
+    import queue
+    import threading
+
+    from src.goals import GoalManager
+    from src.server import agent_server as srv
+
+    sess = object.__new__(srv._AgentSession)
+    sess._lock = threading.RLock()
+    sess._inbox = queue.Queue()
+    sess.session_id = "s"
+    sess.provider = None
+    sess.session = None
+    sess._emit = lambda *a, **k: None
+    sess._save_session = lambda: None
+    sess._goal_snapshot_locked = lambda: (None, 0)
+    sess._goal_mgr = GoalManager("s", judge=None, default_max_turns=5)
+    sess._goal_mgr.set("make the tests pass")
+
+    judged = []
+
+    def _judge(*a, **k):
+        judged.append(a)
+        return "DONE"
+
+    sess._goal_mgr.judge = _judge
+    sess._goal_manager = lambda: sess._goal_mgr
+    srv._AgentSession._maybe_continue_goal(
+        sess, {"subtype": "success", "response_text": "I fixed the tests."}
+    )
+    assert judged, "a completed turn must still be judged"

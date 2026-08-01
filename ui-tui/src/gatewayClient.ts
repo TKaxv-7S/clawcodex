@@ -2006,7 +2006,23 @@ export class GatewayClient extends EventEmitter {
         this.msgStarted = false
 
         if (msg.is_error || msg.subtype === 'error') {
-          this.publish({ payload: { message: String(msg.error ?? msg.result ?? 'error') }, type: 'error' })
+          // `message.complete` above has ALREADY rendered `msg.result` as the
+          // turn's text. Echoing it again here printed the same string twice —
+          // once as the assistant message, once as a red error line — because
+          // an early stop (`error_during_execution` / `error_max_turns`, from
+          // a run the agent loop ended itself) carries its explanation in
+          // `result` and sets no separate `error` field. Prefer a distinct
+          // `error`; otherwise say WHY in one short line and let the already-
+          // rendered text stand on its own.
+          const distinct = typeof msg.error === 'string' && msg.error ? msg.error : undefined
+          const stopped =
+            typeof msg.subtype === 'string' && msg.subtype.startsWith('error_')
+              ? `run stopped early (${msg.subtype})`
+              : undefined
+          this.publish({
+            payload: { message: distinct ?? stopped ?? String(msg.result ?? 'error') },
+            type: 'error'
+          })
         }
 
         break

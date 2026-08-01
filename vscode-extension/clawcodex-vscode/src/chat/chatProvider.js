@@ -414,9 +414,18 @@ class ChatController {
         this._currentSessionId = msg.session_id;
       }
       this._hideThinking();
-      const text = this._accumulatedText || '';
+      // Fall back to msg.result when nothing streamed: a turn the agent loop
+      // cut short (an empty model response, the tool-failure-loop guard) has
+      // no streamed text, and its whole explanation lives in `result`.
+      // Without this the user saw an empty message and a "Completed" status.
+      const text = this._accumulatedText || msg.result || '';
       this._broadcast({ type: 'stream_end', text, usage: msg.usage || null, final: true });
-      if (msg.subtype === 'error') {
+      // `is_error` FIRST, and not an equality test on 'error': the server also
+      // emits `error_during_execution` / `error_max_turns` for a run it ended
+      // itself (src/query/transitions.py EARLY_STOP_SUBTYPES). Matching the
+      // literal 'error' alone let those fall through to the "Completed (N
+      // turns)" branch below and report a cut-short turn as finished.
+      if (msg.is_error || msg.subtype === 'error') {
         this._broadcast({ type: 'error', message: msg.error || msg.result || 'Turn failed' });
       } else if (msg.subtype === 'cancelled') {
         this._broadcast({ type: 'status', content: 'Interrupted' });

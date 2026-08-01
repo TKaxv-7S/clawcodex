@@ -16,6 +16,7 @@ from src.query.transitions import (
     ContinueReason,
     QueryState,
     Terminal,
+    PYTHON_ONLY_TERMINAL_REASONS,
     TerminalReason,
     Transition,
 )
@@ -99,11 +100,60 @@ class TestTransitionReasonsParity(unittest.TestCase):
         self.assertEqual(term.reason, "completed")
 
     def test_all_terminal_reasons_match_ts(self) -> None:
-        """The 10 chapter §'Terminal States' reasons must round-trip."""
+        """Every TS reason must round-trip; extras must be DECLARED.
+
+        This was set-EQUALITY. It is now "TS is a subset, and anything extra
+        appears in ``PYTHON_ONLY_TERMINAL_REASONS``" — deliberately weakened,
+        because this port has a terminal state TS has no counterpart for:
+        ``empty_response``, reached when the model returns no tool calls, no
+        text and nothing in the outbox after the continuation-nudge budget is
+        spent. The arm that detects that is itself Python-only (TS's nudge
+        gates on non-empty text, so it never sees the case), so the terminal
+        state cannot exist upstream either.
+
+        The guard keeps its teeth in both directions that matter: a TS reason
+        we DROP still fails (subset check), and an extra that appears without
+        being declared still fails (the second assertion). Only a documented,
+        deliberate extension passes.
+        """
         ts_reasons = set(self.snapshot["terminal_reasons"])
         import typing as _typing
         py_reasons = set(_typing.get_args(TerminalReason))
-        self.assertEqual(ts_reasons, py_reasons)
+
+        missing = ts_reasons - py_reasons
+        self.assertEqual(
+            missing, set(), f"TS terminal reasons missing from the port: {missing}"
+        )
+        undeclared = py_reasons - ts_reasons - PYTHON_ONLY_TERMINAL_REASONS
+        self.assertEqual(
+            undeclared,
+            set(),
+            "port-only terminal reasons must be declared in "
+            f"PYTHON_ONLY_TERMINAL_REASONS: {undeclared}",
+        )
+
+    def test_declared_extras_are_real_terminal_reasons(self) -> None:
+        """The declaration must not rot: every name in the allowlist has to
+        still exist in the taxonomy, or the allowlist is silently excusing
+        nothing while a real drift hides behind it."""
+        import typing as _typing
+        py_reasons = set(_typing.get_args(TerminalReason))
+        stale = PYTHON_ONLY_TERMINAL_REASONS - py_reasons
+        self.assertEqual(stale, set(), f"declared but not in TerminalReason: {stale}")
+
+    def test_declared_extras_are_reported_not_silent(self) -> None:
+        """A port-only terminal state exists BECAUSE the run stopped early, so
+        it must map to a non-success result subtype. An extra that isn't in
+        EARLY_STOP_SUBTYPES would reintroduce the silent success it was added
+        to remove."""
+        from src.query.transitions import EARLY_STOP_SUBTYPES
+
+        for reason in PYTHON_ONLY_TERMINAL_REASONS:
+            self.assertIn(
+                reason,
+                EARLY_STOP_SUBTYPES,
+                f"{reason} would be reported as a clean success",
+            )
 
     def test_terminal_can_be_created_for_each_reason(self) -> None:
         for reason in self.snapshot["terminal_reasons"]:
