@@ -657,10 +657,40 @@ def build_advisor_forwarded_messages(
             continue
         flattened.append({"role": role, "content": text})
 
-    # Ensure the conversation ends with a user message. Vertex-fronted
-    # Anthropic (and most proxies) reject assistant-prefill.
+    # TWO requirements, and conflating them was a real defect:
+    #
+    #   (a) the forwarded conversation must END WITH A USER TURN — Vertex-
+    #       fronted Anthropic and most proxies reject assistant-prefill; and
+    #   (b) that final turn must actually ASK FOR ADVICE, or the reviewer is
+    #       handed a bare transcript with no request in it.
+    #
+    # This used to append the request ONLY when the tail was not already a
+    # user turn, which silently made (b) conditional on (a). The worker
+    # usually calls the advisor mid-tool-round, so after flattening the tail
+    # IS a user turn (a ``[Tool result: ...]`` line) — no request was added,
+    # and the reviewer did the natural thing with an unterminated transcript:
+    # it CONTINUED it, replying in the worker's own voice with narration and
+    # further tool calls instead of a review.
+    #
+    # Measured on an 89-task terminal-bench run: 54 of 326 answered
+    # consultations (16.6%), spread over 45 of 89 tasks, came back as echoed
+    # transcript. Each cost a full reviewer call and returned the worker its
+    # own words as advice — worse than no advisor at all, because the model
+    # is told to weight advice heavily.
+    #
+    # Appended to the EXISTING user turn rather than added as a second one:
+    # consecutive same-role messages are rejected on some wires, and the
+    # request belongs with the transcript it refers to.
     if not flattened or flattened[-1].get("role") != "user":
         flattened.append({"role": "user", "content": CLIENT_ADVISOR_PROMPT_SUFFIX})
+    elif CLIENT_ADVISOR_PROMPT_SUFFIX not in str(flattened[-1].get("content") or ""):
+        tail = dict(flattened[-1])
+        existing = str(tail.get("content") or "").rstrip()
+        tail["content"] = (
+            f"{existing}\n\n{CLIENT_ADVISOR_PROMPT_SUFFIX}" if existing
+            else CLIENT_ADVISOR_PROMPT_SUFFIX
+        )
+        flattened[-1] = tail
     return flattened
 
 
@@ -1136,7 +1166,34 @@ def execute_client_advisor(
 
     text = getattr(response, "content", None) or ""
     if not isinstance(text, str) or not text.strip():
-        return (False, "Advisor returned no text content.", usage)
+        # An empty reply is usually the reviewer DECLINING, not a glitch.
+        # Measured across an 89-task terminal-bench run: every empty response
+        # came from one of three security-flavoured tasks
+        # (break-filter-js-from-html, crack-7z-hash, vulnerable-secret), the
+        # model emitted 2-3 tokens, and 100% of consultations on those tasks
+        # failed. The old text — "Advisor returned no text content." — told
+        # the worker nothing about why, so it simply called again and got the
+        # same non-answer, spending a turn and a full cache-write each time.
+        #
+        # Carry the stop reason (ChatResponse.finish_reason is the provider's
+        # ``stop_reason``) and say plainly that retrying is unlikely to help,
+        # so the worker proceeds instead of looping. NOT routed through the
+        # retry lane: this is a considered response, not a transient error,
+        # and re-issuing it costs a fresh consultation to reach the same
+        # place.
+        reason = str(getattr(response, "finish_reason", "") or "").strip()
+        detail = f" (stop reason: {reason})" if reason else ""
+        logging.getLogger(__name__).info(
+            "advisor returned no text%s; continuing without advice", detail
+        )
+        return (
+            False,
+            f"Advisor returned no advice{detail} — the reviewer model "
+            "declined or produced no text for this conversation. Calling it "
+            "again on this task is unlikely to help; proceed on your own "
+            "judgment.",
+            usage,
+        )
     return (True, text, usage)
 
 

@@ -598,3 +598,176 @@ class TestBuildAnthropicThinkingKwargs(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAdvisorEmptyResponse(unittest.TestCase):
+    """An empty reply is usually the reviewer DECLINING, not a glitch.
+
+    Across an 89-task terminal-bench run every empty response came from a
+    security-flavoured task, the model emitted 2-3 tokens, and 100% of
+    consultations on those tasks failed — so the worker called again and got
+    the same non-answer, spending a turn and a full cache-write each time.
+    """
+
+    def _empty_response_recorder(self, finish_reason: str = "") -> _Recorder:
+        class _Empty:
+            content = "   "
+            usage = {"input_tokens": 5, "output_tokens": 2}
+            model = "claude-opus-5"
+
+        _Empty.finish_reason = finish_reason
+        rec = _Recorder()
+        rec_cls_response = _Empty()
+
+        def chat_stream_response(messages, **kwargs):
+            rec.calls += 1
+            rec.kwargs = kwargs
+            return rec_cls_response
+
+        rec.chat_stream_response = chat_stream_response
+        return rec
+
+    def test_empty_reply_explains_itself_and_says_not_to_retry(self) -> None:
+        rec = self._empty_response_recorder("refusal")
+        (ok, text, _usage), rec = _run_advisor(
+            "claude-opus-5", anthropic_wire=True, recorder=rec,
+        )
+        self.assertFalse(ok)
+        self.assertIn("refusal", text, msg="the stop reason must be carried")
+        self.assertIn("declined", text.lower())
+        self.assertIn("unlikely to help", text.lower())
+
+    def test_empty_reply_is_not_retried(self) -> None:
+        """A considered non-answer is not transient; re-issuing costs a fresh
+        consultation to reach the same place."""
+        rec = self._empty_response_recorder("end_turn")
+        (_ok, _text, _u), rec = _run_advisor(
+            "claude-opus-5", anthropic_wire=True, recorder=rec,
+        )
+        self.assertEqual(rec.calls, 1)
+
+    def test_usage_is_still_reported_for_an_empty_reply(self) -> None:
+        """The call still cost tokens; dropping them would hide the spend."""
+        rec = self._empty_response_recorder("refusal")
+        (_ok, _text, usage), _rec = _run_advisor(
+            "claude-opus-5", anthropic_wire=True, recorder=rec,
+        )
+        self.assertEqual(usage["input_tokens"], 5)
+        self.assertEqual(usage["output_tokens"], 2)
+
+    def test_missing_stop_reason_still_produces_actionable_text(self) -> None:
+        rec = self._empty_response_recorder("")
+        (_ok, text, _u), _rec = _run_advisor(
+            "claude-opus-5", anthropic_wire=True, recorder=rec,
+        )
+        self.assertIn("declined", text.lower())
+        self.assertNotIn("stop reason:", text.lower())
+
+
+class TestAdvisorAlwaysAsksForAdvice(unittest.TestCase):
+    """The forwarded conversation must always END WITH A REQUEST.
+
+    The tail-is-user case is the COMMON one — the worker calls the advisor
+    mid-tool-round, so after flattening the last turn is a `[Tool result:
+    ...]` line. The request used to be appended only when the tail was NOT
+    already a user turn, so in the common case the reviewer got a bare
+    unterminated transcript and CONTINUED it, replying in the worker's voice
+    with narration and tool calls instead of a review.
+
+    Measured on an 89-task run: 54 of 326 answered consultations (16.6%),
+    across 45 of 89 tasks.
+    """
+
+    def _fwd(self, history):
+        from src.utils.advisor import build_advisor_forwarded_messages
+
+        return build_advisor_forwarded_messages(history)
+
+    def _suffix(self) -> str:
+        from src.utils.advisor import CLIENT_ADVISOR_PROMPT_SUFFIX
+
+        return CLIENT_ADVISOR_PROMPT_SUFFIX
+
+    def test_tail_is_a_user_tool_result_still_asks(self) -> None:
+        """THE regression. This shape produced 16.6% junk consultations."""
+        history = [
+            {"role": "user", "content": "do the task"},
+            {"role": "assistant", "content": [
+                {"type": "text", "text": "waiting on the build"},
+                {"type": "tool_use", "id": "t1", "name": "Bash",
+                 "input": {"command": "ls"}},
+            ]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "file.txt"},
+            ]},
+        ]
+        fwd = self._fwd(history)
+        self.assertEqual(fwd[-1]["role"], "user")
+        self.assertIn(
+            self._suffix(), fwd[-1]["content"],
+            msg="reviewer received a transcript with no request — it will "
+                "continue the transcript instead of reviewing",
+        )
+
+    def test_the_original_tool_result_text_is_preserved(self) -> None:
+        history = [
+            {"role": "user", "content": "task"},
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "IMPORTANT"}]},
+        ]
+        fwd = self._fwd(history)
+        self.assertIn("IMPORTANT", fwd[-1]["content"])
+        self.assertIn(self._suffix(), fwd[-1]["content"])
+
+    def test_tail_is_assistant_appends_a_user_turn(self) -> None:
+        """The original behaviour, unchanged."""
+        history = [
+            {"role": "user", "content": "task"},
+            {"role": "assistant", "content": [
+                {"type": "text", "text": "my plan is X"}]},
+        ]
+        fwd = self._fwd(history)
+        self.assertEqual(fwd[-1]["role"], "user")
+        self.assertEqual(fwd[-1]["content"], self._suffix())
+
+    def test_no_two_consecutive_user_turns(self) -> None:
+        """Some wires reject consecutive same-role messages, so the request
+        is folded into the existing turn rather than added after it."""
+        history = [
+            {"role": "user", "content": "task"},
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "out"}]},
+        ]
+        fwd = self._fwd(history)
+        roles = [m["role"] for m in fwd]
+        for a, b in zip(roles, roles[1:]):
+            self.assertNotEqual(a, b, msg=f"consecutive {a} turns: {roles}")
+
+    def test_request_is_not_duplicated(self) -> None:
+        history = [{"role": "user", "content": "task"}]
+        once = self._fwd(history)
+        self.assertEqual(once[-1]["content"].count(self._suffix()), 1)
+
+    def test_every_shape_ends_with_a_user_request(self) -> None:
+        shapes = {
+            "empty": [],
+            "user only": [{"role": "user", "content": "task"}],
+            "assistant tail": [
+                {"role": "user", "content": "t"},
+                {"role": "assistant", "content": [{"type": "text", "text": "plan"}]}],
+            "tool-result tail": [
+                {"role": "user", "content": "t"},
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "x", "name": "Bash", "input": {}}]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "x", "content": "o"}]}],
+        }
+        for name, hist in shapes.items():
+            with self.subTest(shape=name):
+                fwd = self._fwd(hist)
+                self.assertEqual(fwd[-1]["role"], "user")
+                self.assertIn(self._suffix(), fwd[-1]["content"])
