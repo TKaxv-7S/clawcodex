@@ -38,7 +38,12 @@ test('loadOrCreateInstallationId persists and reuses one installation ID', () =>
       loadOrCreateInstallationId(filePath, () => ID_B),
       ID_A
     )
-    assert.equal(fs.statSync(filePath).mode & 0o777, 0o600)
+
+    // Windows has no POSIX mode bits (stat reports 0o666 regardless of the
+    // mode passed at write time), so only assert the 0600 tightening on POSIX.
+    if (process.platform !== 'win32') {
+      assert.equal(fs.statSync(filePath).mode & 0o777, 0o600)
+    }
   }))
 
 test('loadOrCreateInstallationId tightens an existing identity file', () =>

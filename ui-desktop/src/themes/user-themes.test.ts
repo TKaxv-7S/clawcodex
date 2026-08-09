@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { BUILTIN_THEMES, DEFAULT_SKIN_NAME } from './presets'
+import { BUILTIN_THEME_LIST, BUILTIN_THEMES, DEFAULT_SKIN_NAME } from './presets'
 import {
   $marketplaceInstalls,
   $userThemes,
@@ -42,7 +42,9 @@ describe('user theme registry', () => {
     installUserTheme(makeTheme('Custom'))
     const names = listAllThemes().map(t => t.name)
 
-    expect(names.slice(0, Object.keys(BUILTIN_THEMES).length)).toEqual(Object.keys(BUILTIN_THEMES))
+    // Compare against the deduped list, not the key set: alias keys (legacy
+    // "nous") resolve to a theme already listed under its canonical name.
+    expect(names.slice(0, BUILTIN_THEME_LIST.length)).toEqual(BUILTIN_THEME_LIST.map(t => t.name))
     expect(names.at(-1)).toBe('vsc-custom')
   })
 
@@ -56,6 +58,9 @@ describe('user theme registry', () => {
 
   it('resolves built-ins through the same lookup', () => {
     expect(resolveTheme(DEFAULT_SKIN_NAME)).toBe(BUILTIN_THEMES[DEFAULT_SKIN_NAME])
+    // Pre-rename stored prefs ("nous") keep resolving via the legacy alias,
+    // without the alias adding a second list entry.
+    expect(resolveTheme('nous')).toBe(BUILTIN_THEMES[DEFAULT_SKIN_NAME])
   })
 
   it('refuses to shadow a built-in name', () => {

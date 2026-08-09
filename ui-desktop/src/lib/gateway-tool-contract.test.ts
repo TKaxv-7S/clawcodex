@@ -15,6 +15,7 @@ import { describe, expect, it } from 'vitest'
 
 import { buildToolView, inlineDiffFromResult } from '../components/assistant-ui/tool/fallback-model'
 import type { ToolPart } from '../components/assistant-ui/tool/fallback-model'
+
 import { upsertToolPart } from './chat-messages'
 import fixture from './gateway-tool-events.fixture.json'
 

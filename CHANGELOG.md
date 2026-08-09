@@ -61,6 +61,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Ubuntu on every PR (`fail-fast: false`, LF checkouts enforced by a new
   `.gitattributes`). The `linux_only` pytest marker is now actually
   enforced by a collection hook instead of being documentation.
+- **ClawCodex Desktop on Windows.** The Electron app builds, runs, and
+  packages natively on Windows 10/11: `npm run dist:win:nsis` produces an
+  unsigned NSIS installer (`ClawCodex-<version>-win-x64.exe`) with the
+  crab icon and version metadata stamped via rcedit and node-pty's conpty
+  binaries staged; `clawcodex desktop` launches the dev app (the bare
+  `npm` spawn now resolves `npm.cmd`). The packaged app boots the same
+  `%USERPROFILE%\.clawcodex\clawcodex` backend the CLI installers create
+  — one shared install, config, and session store across CLI, TUI, and
+  Desktop. Verified live end to end on Windows 11: NSIS silent install →
+  app boot → backend spawn from the venv → healthy loopback gateway.
+- Desktop fixes that surfaced during the port: the in-app updater's
+  relaunch resolver looked for the app under the upstream `apps/desktop/`
+  layout (never matching this repo's `ui-desktop/`, so updates always
+  ended in "reinstall the GUI"), and its relaunch handoff — a bash
+  script — is now explicitly skipped on Windows in favor of the honest
+  manual-restart state; a hashbang in `scripts/stage-native-deps.mjs`
+  broke vitest collection of the packaging tests; the `fmt` script's
+  single quotes matched nothing under cmd.exe.
 
 ### Fixed
 

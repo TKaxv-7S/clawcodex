@@ -1,5 +1,8 @@
-#!/usr/bin/env node
 // stage-native-deps.mjs — stages node-pty's native runtime dependencies
+// (no hashbang: always invoked as `node scripts/stage-native-deps.mjs`, and
+// a hashbang in an IMPORTED module breaks vitest's vite-node wrapper — the
+// `#` lands mid-source after the SSR transform → "Invalid or unexpected
+// token" when the electron-project tests import this file.)
 //
 // Usage:
 //   node scripts/stage-native-deps.mjs                # host platform/arch

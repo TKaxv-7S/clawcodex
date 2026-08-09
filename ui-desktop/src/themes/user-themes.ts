@@ -15,7 +15,7 @@ import { atom, computed } from 'nanostores'
 import { registry } from '@/contrib/registry'
 
 import { $backendThemes } from './backend-sync'
-import { BUILTIN_THEMES } from './presets'
+import { BUILTIN_THEME_LIST, BUILTIN_THEMES } from './presets'
 import type { DesktopTheme, DesktopThemeColors } from './types'
 
 const USER_THEMES_KEY = 'clawcodex-desktop-user-themes-v1'
@@ -185,7 +185,9 @@ export function listAllThemes(): DesktopTheme[] {
   const shadows = (theme: DesktopTheme) => user[theme.name] || backend[theme.name]
 
   return [
-    ...Object.values(BUILTIN_THEMES),
+    // The deduped list, not Object.values: alias keys (e.g. legacy "nous")
+    // resolve to a theme that is already listed under its canonical name.
+    ...BUILTIN_THEME_LIST,
     ...contributedThemes().filter(theme => !shadows(theme)),
     ...Object.values(backend).filter(theme => !user[theme.name]),
     ...Object.values(user)

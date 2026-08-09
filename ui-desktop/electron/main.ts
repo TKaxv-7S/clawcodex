@@ -3448,6 +3448,21 @@ async function applyUpdatesPosixInApp(opts: any) {
     const outcome = decideRelaunchOutcome({ underUnpacked, sandboxOk })
 
     if (outcome === 'relaunch') {
+      if (IS_WINDOWS) {
+        // The handoff below is a bash script — POSIX-only. A rebuilt
+        // win-unpacked binary can't re-exec that way (and the running exe
+        // is locked on NTFS regardless), so return the honest
+        // manual-restart terminal state instead of dying in the spawn.
+        rememberLog('[updates] windows: skipping bash relaunch handoff; manual restart')
+
+        return {
+          ok: true,
+          backendUpdated: true,
+          guiUpdated: false,
+          manualRestart: true,
+          message: 'Backend updated. Quit and reopen ClawCodex to load the new version.'
+        }
+      }
       emitUpdateProgress({ stage: 'restart', message: 'Restarting ClawCodex…', percent: 100 })
       // Preserve launch context across the re-exec: replay the original args
       // (filtered of Electron internals) and the env/cwd that define which
@@ -3526,9 +3541,12 @@ async function applyUpdatesPosixInApp(opts: any) {
     }
   }
 
+  // `ui-desktop/` is this repo's app location (the upstream `apps/desktop`
+  // spelling matched nothing here, so the mac bundle swap never found the
+  // rebuilt .app).
   const rebuiltApp = [
-    path.join(updateRoot, 'apps', 'desktop', 'release', 'mac-arm64', 'ClawCodex.app'),
-    path.join(updateRoot, 'apps', 'desktop', 'release', 'mac', 'ClawCodex.app')
+    path.join(updateRoot, 'ui-desktop', 'release', 'mac-arm64', 'ClawCodex.app'),
+    path.join(updateRoot, 'ui-desktop', 'release', 'mac', 'ClawCodex.app')
   ].find(directoryExists)
 
   const targetApp = runningAppBundle()

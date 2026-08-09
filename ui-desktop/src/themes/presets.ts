@@ -287,7 +287,10 @@ export const BUILTIN_THEMES: Record<string, DesktopTheme> = {
   slate: slateTheme
 }
 
-export const BUILTIN_THEME_LIST = Object.values(BUILTIN_THEMES)
+// Alias keys point at the same theme object, so dedupe by identity: list
+// surfaces (pickers, /skin, the merged registry) must offer each theme once
+// even when it answers to more than one stored name.
+export const BUILTIN_THEME_LIST = [...new Set(Object.values(BUILTIN_THEMES))]
 
 /** Skin used when nothing is persisted or the persisted name is retired. */
 export const DEFAULT_SKIN_NAME = 'clawcodex'

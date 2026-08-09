@@ -168,13 +168,18 @@ test('getVenvSitePackagesEntries: returns empty on Windows when site-packages do
 })
 
 test('getVenvSitePackagesEntries: reads pyvenv.cfg version on POSIX and resolves lib/pythonX.Y/site-packages', () => {
+  // The resolver joins with host separators (backslashes on Windows), so build
+  // the expected path the same way it does — the fixture models a POSIX venv
+  // regardless of the host running the test.
+  const expected = path.join('/venv', 'lib', 'python3.12', 'site-packages')
+
   const result = getVenvSitePackagesEntries('/venv', {
     isWindows: false,
-    directoryExists: p => p === '/venv/lib/python3.12/site-packages',
+    directoryExists: p => p === expected,
     readFile: () => 'version_info = 3.12.1\n'
   })
 
-  assert.deepEqual(result, ['/venv/lib/python3.12/site-packages'])
+  assert.deepEqual(result, [expected])
 })
 
 test('getVenvSitePackagesEntries: returns empty on POSIX when pyvenv.cfg is missing', () => {

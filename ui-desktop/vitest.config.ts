@@ -10,9 +10,12 @@ const reactUi: TestProjectConfiguration = {
     include: ['src/**/*.test.{ts,tsx}'],
     globals: true,
     // The first test in each file pays jsdom env init + full module transform,
-    // which can exceed vitest's 5000ms default under CI/load. 15s gives the
-    // cold start headroom without masking genuinely hung tests.
-    testTimeout: 15_000
+    // which can exceed vitest's 5000ms default under CI/load. Full-suite runs
+    // on Windows dev boxes starve cold starts past 15s (filesystem-heavy
+    // transforms), and a test killed mid-import leaks its late render into the
+    // next test's DOM ("Found multiple elements" cascades). 30s covers the
+    // worst observed cold start without masking genuinely hung tests.
+    testTimeout: 30_000
   }
 }
 

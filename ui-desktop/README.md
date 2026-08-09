@@ -5,9 +5,11 @@ polished native window: streaming responses, live tool activity, side-by-side
 previews, a file browser, and settings, no terminal required. Built with
 Electron, Vite, and React.
 
-> **Status: port in progress.** The UI layer builds and its test suite runs
-> (see *Development* below). Wiring to the ClawCodex Python backend
-> (`clawcodex serve`) and packaged installers land in follow-up stages.
+> **Status: working end to end.** The app boots the ClawCodex Python backend
+> (`clawcodex serve`) itself and runs real sessions against it. Packaging:
+> `npm run dist:mac` (DMG/zip) on macOS and `npm run dist:win:nsis`
+> (NSIS installer, unsigned) on Windows; `clawcodex desktop` launches the
+> dev app from a checkout on both.
 
 ## Layout
 
@@ -31,8 +33,11 @@ npm run lint
 npm test               # vitest: ui + electron projects
 ```
 
-`npm run dev` (Vite renderer + Electron shell) boots the app shell; full
-backend attach is part of the wiring stage.
+`npm run dev` (Vite renderer + Electron shell) boots the full app — the main
+process spawns `clawcodex serve` from the checkout this repo sits in
+(`CLAWCODEX_DESKTOP_CLAWCODEX_ROOT` pins a different backend root). On
+Windows, install [Git for Windows](https://git-scm.com/download/win) first —
+the backend's shell tool runs commands through Git Bash.
 
 ## Testing
 

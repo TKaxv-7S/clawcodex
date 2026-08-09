@@ -51,7 +51,7 @@ function unpackedDirName(platform) {
 }
 
 /**
- * If `execPath` lives under `<updateRoot>/apps/desktop/release/<plat>-unpacked`,
+ * If `execPath` lives under `<updateRoot>/ui-desktop/release/<plat>-unpacked`,
  * return that unpacked dir; otherwise null. A null result means the running
  * binary is NOT the thing we just rebuilt (AppImage/.deb/.rpm/dev), so we must
  * not claim a GUI relaunch.
@@ -64,7 +64,11 @@ function resolveUnpackedRelease(execPath, updateRoot, platform) {
     return null
   }
 
-  const releaseDir = path.join(updateRoot, 'apps', 'desktop', 'release')
+  // This repo keeps the desktop app at `ui-desktop/` (the upstream layout
+  // this file came from used `apps/desktop/` — that spelling made this
+  // resolver always return null here, so in-app updates ended in 'guiSkew'
+  // instead of relaunching).
+  const releaseDir = path.join(updateRoot, 'ui-desktop', 'release')
   const unpacked = path.join(releaseDir, unpackedDirName(platform))
   const normalizedExec = path.resolve(String(execPath))
   // execPath must be the unpacked dir itself or a descendant of it.

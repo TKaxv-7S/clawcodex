@@ -4,6 +4,11 @@ import { test } from 'vitest'
 
 import { collectSshConfigHosts, parseSshConfigHosts, parseSshConfigIncludes, parseSshGOutput } from './ssh-config'
 
+// The include walker resolves tokens with host-native path.join — backslashes
+// on Windows — while these fixtures key files by POSIX path. Normalize before
+// lookup so the same fixtures drive every platform.
+const posixy = p => p.replace(/\\/g, '/')
+
 test('parseSshConfigHosts keeps literal aliases and drops wildcard/negated patterns', () => {
   const cfg = [
     'Host devbox',
@@ -36,7 +41,7 @@ test('collectSshConfigHosts follows Include directives (read-only)', () => {
 
   const hosts = collectSshConfigHosts('/home/u/.ssh/config', {
     homeDir: '/home/u',
-    readFile: p => files[p] ?? null
+    readFile: p => files[posixy(p)] ?? null
   })
 
   assert.deepEqual(hosts.sort(), ['deep', 'home-abs', 'main', 'work-box'].sort())
@@ -54,7 +59,7 @@ test('collectSshConfigHosts does not loop on a self-include cycle', () => {
 
   const hosts = collectSshConfigHosts('/home/u/.ssh/config', {
     homeDir: '/home/u',
-    readFile: p => files[p] ?? null
+    readFile: p => files[posixy(p)] ?? null
   })
 
   assert.deepEqual(hosts.sort(), ['a', 'b'])
@@ -69,9 +74,11 @@ test('collectSshConfigHosts expands globbed includes via injected globSync', () 
 
   const hosts = collectSshConfigHosts('/home/u/.ssh/config', {
     homeDir: '/home/u',
-    readFile: p => files[p] ?? null,
+    readFile: p => files[posixy(p)] ?? null,
     globSync: pattern =>
-      pattern.endsWith('config.d/*') ? ['/home/u/.ssh/config.d/10-work', '/home/u/.ssh/config.d/20-home'] : [pattern]
+      posixy(pattern).endsWith('config.d/*')
+        ? ['/home/u/.ssh/config.d/10-work', '/home/u/.ssh/config.d/20-home']
+        : [pattern]
   })
 
   assert.deepEqual(hosts.sort(), ['home', 'root', 'work'].sort())

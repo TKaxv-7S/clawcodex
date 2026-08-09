@@ -164,7 +164,12 @@ test('listBranches: empty on a non-repo path', async () => {
   try {
     assert.deepEqual(await listBranches(dir, 'git'), [])
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true })
+    // listBranches probes with two for-each-ref children under Promise.all; on
+    // a non-repo the first rejection returns [] while the second child still
+    // holds cwd=dir, which Windows reports as EBUSY on rmdir. Retry with the
+    // async rm — rmSync cannot sleep, so its retries all land while the child
+    // is still alive.
+    await fs.promises.rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   }
 })
 

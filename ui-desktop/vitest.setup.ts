@@ -35,6 +35,8 @@ if (typeof (globalThis as any).localStorage === 'undefined') {
 
 // findBy*/waitFor default to a 1000ms deadline — too tight for async-heavy
 // panels (radix menus, refetch chains) when the full suite runs under xdist
-// CPU contention in CI. Success still resolves the instant the node appears;
-// the wider deadline only absorbs a starved runner, killing timing flakes.
-configure({ asyncUtilTimeout: 5000 })
+// CPU contention in CI. Full-suite runs on Windows dev boxes starve workers
+// even longer — whole files' waits expiring at a 5s deadline. Success still
+// resolves the instant the node appears; the wider deadline only absorbs a
+// starved runner, killing timing flakes.
+configure({ asyncUtilTimeout: 10_000 })

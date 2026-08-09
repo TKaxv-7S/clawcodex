@@ -63,11 +63,21 @@ test('boot progress overlay fades out or shows error state', async () => {
         return true
       }
 
-      // Success path: overlay disappears and the app renders. If there's
-      // no "boot" / "starting" / "installing" text visible, boot has
-      // completed (either to the main UI or to onboarding).
-      const bootIndicators = ['starting', 'resolving', 'spawning', 'waiting', 'installing']
       const lower = text.toLowerCase()
+
+      // Success path A: the isolated sandbox config has no providers, so a
+      // packaged boot legitimately terminates at the first-run/onboarding
+      // gate — an interactive state whose status widget still says
+      // "Starting ClawCodex… / Waiting for first-run setup choice". The
+      // onboarding copy being on screen means boot is done.
+      if (lower.includes('connect a model provider')) {
+        return true
+      }
+
+      // Success path B: overlay disappears and the app renders. If there's
+      // no "boot" / "starting" / "installing" text visible, boot has
+      // completed to the main UI.
+      const bootIndicators = ['starting', 'resolving', 'spawning', 'waiting', 'installing']
 
       return !bootIndicators.some((word) => lower.includes(word))
     },

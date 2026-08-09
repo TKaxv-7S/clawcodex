@@ -37,8 +37,12 @@ import {
   unpackedDirName
 } from './update-relaunch'
 
-const ROOT = '/home/u/.clawcodex/clawcodex'
-const UNPACKED = path.join(ROOT, 'apps', 'desktop', 'release', 'linux-unpacked')
+// Pre-resolve: resolveUnpackedRelease path.resolve()s the execPath, and on
+// Windows that drive-qualifies a rootless POSIX-style fixture (`\home\u` →
+// `C:\home\u`) — so the fixture must be resolved too or the prefix check can
+// never line up. On POSIX resolve('/home/…') is the identity.
+const ROOT = path.resolve('/home/u/.clawcodex/clawcodex')
+const UNPACKED = path.join(ROOT, 'ui-desktop', 'release', 'linux-unpacked')
 
 // ---------------------------------------------------------------------------
 // 1) The execPath split — the heart of the GUI/backend skew guard.
@@ -74,7 +78,7 @@ test('resolveUnpackedRelease is null for AppImage / .deb / .rpm / dev / unresolv
 
 test('resolveUnpackedRelease is not fooled by a sibling prefix dir', () => {
   // `.../release/linux-unpacked-evil` must NOT match `.../release/linux-unpacked`.
-  const sneaky = path.join(ROOT, 'apps', 'desktop', 'release', 'linux-unpacked-evil', 'clawcodex')
+  const sneaky = path.join(ROOT, 'ui-desktop', 'release', 'linux-unpacked-evil', 'clawcodex')
   assert.equal(resolveUnpackedRelease(sneaky, ROOT, 'linux'), null)
 })
 
@@ -190,10 +194,21 @@ test('shellQuote neutralizes single quotes and metacharacters', () => {
   assert.equal(shellQuote('$(rm -rf /)'), `'$(rm -rf /)'`)
 })
 
+// `bash -n <file>` on POSIX; on Windows both MSYS and WSL bash mangle a
+// `C:\…` argv path (MSYS strips the unquoted backslashes), so feed the script
+// over stdin instead — same parse-only lint, no path translation involved.
+function lintBash(file, script) {
+  if (process.platform === 'win32') {
+    execFileSync('bash', ['-n'], { stdio: 'pipe', input: script })
+  } else {
+    execFileSync('bash', ['-n', file], { stdio: 'pipe' })
+  }
+}
+
 test('buildRelaunchScript embeds pid/exec/args/env/cwd and is valid bash', () => {
   const script = buildRelaunchScript({
     pid: 4242,
-    execPath: '/home/u/.clawcodex/clawcodex/apps/desktop/release/linux-unpacked/ClawCodex',
+    execPath: '/home/u/.clawcodex/clawcodex/ui-desktop/release/linux-unpacked/ClawCodex',
     args: ['clawcodex://open/agent/42', "--note=it's fine"],
     env: { CLAWCODEX_CONFIG_DIR: '/home/u/.clawcodex', CLAWCODEX_DESKTOP_REMOTE_URL: 'http://box:9119' },
     cwd: '/home/u/work dir'
@@ -215,7 +230,7 @@ test('buildRelaunchScript embeds pid/exec/args/env/cwd and is valid bash', () =>
   fs.writeFileSync(tmp, script)
 
   try {
-    execFileSync('bash', ['-n', tmp], { stdio: 'pipe' })
+    lintBash(tmp, script)
   } finally {
     fs.rmSync(tmp, { force: true })
   }
@@ -234,7 +249,7 @@ test('buildRelaunchScript with no args/env still lints clean', () => {
   fs.writeFileSync(tmp, script)
 
   try {
-    execFileSync('bash', ['-n', tmp], { stdio: 'pipe' })
+    lintBash(tmp, script)
   } finally {
     fs.rmSync(tmp, { force: true })
   }

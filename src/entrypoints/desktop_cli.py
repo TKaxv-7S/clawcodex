@@ -4,8 +4,8 @@ Dev-oriented launcher for the Electron shell in ``ui-desktop/``: it resolves
 the checkout this CLI is running from, makes sure the app's npm deps exist,
 and hands off to ``npm run dev`` (Vite renderer + Electron main, which spawns
 `clawcodex serve` as its backend). The spawned app is pointed back at THIS
-checkout via ``CLAWCODEX_DESKTOP_BACKEND_ROOT`` so the backend it boots is the
-code you're sitting in, not whatever else is on PATH.
+checkout via ``CLAWCODEX_DESKTOP_CLAWCODEX_ROOT`` so the backend it boots is
+the code you're sitting in, not whatever else is on PATH.
 
 Packaged-app launching (installed .app/.exe) arrives with the packaging
 stage; this entry covers the source-checkout path the TUI's ``clawcodex``
@@ -94,7 +94,8 @@ def run_desktop_subcommand(argv: list[str]) -> int:
               "clawcodex checkout (git pull to get the desktop app).",
               file=sys.stderr)
         return 2
-    if shutil.which("npm") is None:
+    npm = shutil.which("npm")
+    if npm is None:
         print("desktop: npm not found on PATH — install Node.js 22+ first.",
               file=sys.stderr)
         return 2
@@ -107,8 +108,12 @@ def run_desktop_subcommand(argv: list[str]) -> int:
     env = launch_env(root)
     for cmd in build_launch_plan(app_dir, install=args.install, dev=not args.no_dev):
         print(f"desktop: {' '.join(cmd)}  (in {app_dir})", file=sys.stderr)
+        # Substitute the resolved npm path: on Windows npm is ``npm.cmd``,
+        # which CreateProcess won't find from the bare name (no PATHEXT
+        # search in Popen); ``shutil.which`` already resolved the real file.
+        argv = [npm, *cmd[1:]] if cmd[0] == "npm" else cmd
         try:
-            result = subprocess.run(cmd, cwd=str(app_dir), env=env)
+            result = subprocess.run(argv, cwd=str(app_dir), env=env)
         except KeyboardInterrupt:
             return 0
         if result.returncode != 0:
