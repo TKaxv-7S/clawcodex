@@ -7,6 +7,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Native Windows support for the CLI.** ClawCodex now runs first-class on
+  Windows 10/11 — PowerShell, cmd, and Windows Terminal — with no WSL
+  required. The port follows the playbook of a reference Windows-supporting
+  CLI (shell resolution, tree-kill semantics, tiered CI, LF-pinned
+  checkouts) rather than ad-hoc `if windows` patches:
+  - A new platform layer (`src/utils/shell_platform.py`) resolves **Git
+    Bash** for the Bash tool — env override (`CLAWCODEX_GIT_BASH_PATH` /
+    `CLAUDE_CODE_GIT_BASH_PATH`), then derivation from `git.exe`, then
+    well-known install dirs — and explicitly refuses the WSL launcher
+    shims (`System32\bash.exe`, WindowsApps), which would run commands
+    inside a Linux VM against the wrong filesystem. Shell commands keep
+    their POSIX semantics on every platform; hooks, autofix, and
+    statusline commands route through the same bash.
+  - Process **tree** kills work on Windows (`taskkill /T /F`, the
+    `tree-kill` approach) — abort/timeout/TaskStop paths no longer rely on
+    POSIX `os.killpg`/`SIGKILL`, which crashed with `AttributeError`.
+    Background bash no longer passes `start_new_session` (a `ValueError`
+    on Windows).
+  - Persistent-cwd tracking uses `pwd -W` under Git Bash so `cd` in
+    compound commands round-trips real Windows paths; the Bash tool's
+    `cwd` argument accepts drive-letter absolute paths; `@`-mentions and
+    `CLAWCODEX.md` `@includes` resolve `C:\...` paths.
+  - Real file locking on Windows (`msvcrt` region locks) for the server
+    lockfile, swarm mailbox, and transcript writer — the Windows CRT's
+    `O_APPEND` emulation is not atomic, so concurrent appends previously
+    could *lose* lines there.
+  - Windows-correct config roots (`%ProgramData%\ClawCodex` for managed
+    policy; `%TEMP%` instead of a literal `/tmp` for spill dirs), NTFS
+    case-insensitive path containment in the permission layer, and a
+    JSON-encoded agent-server command so interpreter paths containing
+    spaces (`C:\Program Files\...`) survive the TUI handoff.
+- **`install.ps1` — the native Windows one-click installer**
+  (PowerShell 5.1+):
+
+  ```powershell
+  irm https://clawcodex.app/install.ps1 | iex
+  ```
+
+  Mirrors `install.sh` end to end: git prerequisite check (plus a Git
+  Bash runtime check), user-local `uv` install, Python 3.10+
+  provisioning, clone to `%USERPROFILE%\.clawcodex\clawcodex`,
+  lock-pinned `uv sync`, `clawcodex` shims (cmd + Git Bash) in
+  `%USERPROFILE%\.local\bin`, registry user-PATH update, Node
+  provisioning, and the Ink TUI build — with the same agent-friendly
+  lifecycle subcommands (`status` / `doctor` / `verify` / `update` /
+  `uninstall`), `-DryRun`, `-LogFile`, ownership-marker-gated uninstall,
+  and the grep-friendly `DONE:` exit summary. `install.sh` on a native
+  Windows shell now points at it.
+- **Windows CI**: the full test suite runs on `windows-latest` alongside
+  Ubuntu on every PR (`fail-fast: false`, LF checkouts enforced by a new
+  `.gitattributes`). The `linux_only` pytest marker is now actually
+  enforced by a collection hook instead of being documentation.
+
+### Fixed
+
+- The stdio agent-server pins `\n` framing on Windows (text-mode stdout
+  would otherwise emit `\r\n` NDJSON), and the startup profiler no longer
+  crashes on import when the environment lacks a resolvable home
+  directory.
+- Session-runner kill status is classified correctly on Windows
+  (`TerminateProcess` exit code 1 after a requested kill reads as
+  *interrupted*, matching POSIX `-SIGTERM`), and the stream watchdog's
+  force-close actually wakes a reader parked in `recv` (WinSock
+  `shutdown` alone never does).
+
 ## [1.5.0] - 2026-08-08
 
 ### Added

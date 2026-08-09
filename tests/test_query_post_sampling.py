@@ -133,7 +133,7 @@ class _PostSamplingHarness(unittest.TestCase):
                     "type": "command",
                     # Append the stdin payload as one line per invocation
                     # (command hooks run via create_subprocess_shell).
-                    "command": f"cat >> {self.hook_log}; echo >> {self.hook_log}",
+                    "command": f"cat >> {self.hook_log.as_posix()}; echo >> {self.hook_log.as_posix()}",
                 }],
             },
         }), encoding="utf-8")

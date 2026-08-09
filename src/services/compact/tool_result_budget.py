@@ -12,6 +12,7 @@ import hashlib
 import json
 import logging
 import os
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -36,7 +37,9 @@ MANIFEST_FILENAME = "budget_manifest.json"
 # ``check_readable_internal_path``) and the writer below resolve the same path.
 # Mirrors how TS treats getToolResultsDir / getProjectTempDir as harness-internal
 # readable paths (typescript/src/utils/permissions/filesystem.ts:1678-1723).
-TOOL_RESULT_BUDGET_ROOT = Path("/tmp/claw_codex_budget")
+# ``tempfile.gettempdir()`` (not a literal ``/tmp``) so Windows resolves to
+# ``%TEMP%`` instead of a phantom ``C:\tmp``.
+TOOL_RESULT_BUDGET_ROOT = Path(tempfile.gettempdir()) / "claw_codex_budget"
 
 
 def get_tool_result_budget_dir() -> Path:

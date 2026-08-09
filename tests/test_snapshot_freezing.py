@@ -133,7 +133,7 @@ class TestRunHooksForEventReadsSnapshot:
         marker = tmp_path / "real_fired.txt"
         real_hook = HookConfig(
             type="command",
-            command=f"echo 'real' > {marker}",
+            command=f"echo 'real' > {marker.as_posix()}",
             source=HookSource.USER_SETTINGS,
         )
         manager = _build_manager_with_snapshot({"PreToolUse": [real_hook]})
@@ -175,7 +175,7 @@ class TestRunHooksForEventReadsSnapshot:
         settings_path.write_text(json.dumps({
             "hooks": {"PreToolUse": [{
                 "type": "command",
-                "command": f"echo 'A' > {marker_a}",
+                "command": f"echo 'A' > {marker_a.as_posix()}",
             }]}
         }))
 
@@ -188,7 +188,7 @@ class TestRunHooksForEventReadsSnapshot:
         settings_path.write_text(json.dumps({
             "hooks": {"PreToolUse": [{
                 "type": "command",
-                "command": f"echo 'B' > {marker_b}",
+                "command": f"echo 'B' > {marker_b.as_posix()}",
             }]}
         }))
 

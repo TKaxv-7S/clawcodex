@@ -12,10 +12,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
-import signal
+import sys
 from dataclasses import dataclass
 from typing import Any
+
+from src.utils.shell_platform import (
+    bash_env,
+    find_bash,
+    kill_process_tree,
+    popen_tree_kwargs,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,15 +56,32 @@ async def _run_command(
     ``detached`` + ``killTree`` analog) and reap. Never raises — a spawn
     failure is a non-zero exit."""
     try:
-        proc = await asyncio.create_subprocess_shell(
-            command,
-            cwd=cwd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            # Own process group so a timeout/abort kills the whole tree (the
-            # shell + its children), not just the shell.
-            start_new_session=True,
-        )
+        # On Windows ``create_subprocess_shell`` means cmd.exe — wrong for
+        # lint/test commands written with POSIX semantics (the same commands
+        # the Bash tool and hooks run). Route through Git Bash there when
+        # available; a bash-less Windows falls back to cmd.exe.
+        win_bash = find_bash() if sys.platform == "win32" else None
+        if win_bash is not None:
+            proc = await asyncio.create_subprocess_exec(
+                win_bash,
+                "-c",
+                command,
+                cwd=cwd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=bash_env(),
+                **popen_tree_kwargs(),
+            )
+        else:
+            proc = await asyncio.create_subprocess_shell(
+                command,
+                cwd=cwd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                # Own process group (POSIX) / detached group (Windows) so a
+                # timeout/abort kills the whole tree, not just the shell.
+                **popen_tree_kwargs(),
+            )
     except Exception:  # noqa: BLE001 — spawn failure is non-critical
         logger.debug("autofix: failed to spawn %r", command, exc_info=True)
         return _CmdResult(stdout="", stderr="spawn failed", exit_code=1, timed_out=False)
@@ -120,15 +143,14 @@ async def _run_command(
 def _kill_group(proc: asyncio.subprocess.Process) -> None:
     if proc.pid is None:
         return
+    # SIGTERM group-kill on POSIX (graceful, matching TS); ``taskkill /T`` on
+    # Windows. ``kill_process_tree`` swallows the already-exited race, so the
+    # direct-kill fallback only matters if the group genuinely didn't exist.
+    kill_process_tree(proc.pid, force=False)
     try:
-        # SIGTERM to match TS (graceful group terminate).
-        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-    except (ProcessLookupError, PermissionError, OSError):
-        # Already-exited race (TS catches the same) or no group — fall back.
-        try:
-            proc.kill()
-        except (ProcessLookupError, OSError):
-            pass
+        proc.kill()
+    except (ProcessLookupError, OSError):
+        pass
 
 
 def _build_error_summary(result: AutoFixResult) -> str | None:

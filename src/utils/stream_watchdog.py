@@ -64,6 +64,7 @@ from __future__ import annotations
 import logging
 import os
 import socket as _socket
+import sys
 import threading
 import time as _time
 from typing import Any, Callable
@@ -122,10 +123,28 @@ def force_close_response(stream: Any) -> None:
                 else None
             )
             if sock is not None:
-                sock.shutdown(_socket.SHUT_RDWR)
+                try:
+                    sock.shutdown(_socket.SHUT_RDWR)
+                except Exception:
+                    # Already shut down / not a real socket — the win32
+                    # close below and the plain close still run.
+                    pass
+                if sys.platform == "win32":
+                    # WinSock's shutdown() only REJECTS FUTURE recv
+                    # calls; a thread already parked inside recv keeps
+                    # blocking (POSIX wakes it with EOF — verified by
+                    # the real-socket regression test, which hangs on
+                    # Windows without this). Closing the handle is what
+                    # cancels the in-flight read there: closesocket
+                    # aborts the pending recv with WSAECONNABORTED and
+                    # the consumer unwinds. Redundant-but-idempotent
+                    # with the response.close() below, and win32-only so
+                    # POSIX keeps the documented shutdown-then-close
+                    # contract byte-for-byte.
+                    sock.close()
         except Exception:
-            # Already shut down / not a real socket / transport without
-            # the extension — fall through to the plain close.
+            # Not a real socket / transport without the extension —
+            # fall through to the plain close.
             pass
         close = getattr(response, "close", None)
         if callable(close):

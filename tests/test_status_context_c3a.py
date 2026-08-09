@@ -138,13 +138,18 @@ class TestExecuteStatusLineCommand:
 
     def test_command_reads_json_stdin(self) -> None:
         import sys
+        from pathlib import Path
 
+        # as_posix(): statusline commands execute under bash (Git Bash on
+        # Windows), where backslashed interpreter paths would be eaten as
+        # escapes. Identical to sys.executable on POSIX.
+        py = Path(sys.executable).as_posix()
         out = execute_status_line_command(
             self._input(),
             config={
                 "type": "command",
                 "command": (
-                    f"{sys.executable} -c \"import json,sys;"
+                    f"'{py}' -c \"import json,sys;"
                     "d=json.load(sys.stdin);"
                     "print(d['model']['id'], d['context_window']['used_percentage'])\""
                 ),

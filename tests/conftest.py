@@ -6,7 +6,24 @@ they don't leak entries into the developer's real OS keychain.
 
 from __future__ import annotations
 
+import sys
+
 import pytest
+
+
+def pytest_collection_modifyitems(config, items):
+    """Enforce the ``linux_only`` marker registered in pyproject.toml.
+
+    The marker's contract ("auto-skipped on macOS/Windows") was previously
+    documentation only — nothing implemented the skip, so marked tests ran
+    everywhere. Required for the Windows CI leg.
+    """
+    if sys.platform.startswith("linux"):
+        return
+    skip = pytest.mark.skip(reason=f"requires Linux (running on {sys.platform})")
+    for item in items:
+        if "linux_only" in item.keywords:
+            item.add_marker(skip)
 
 
 class _InMemoryKeyringBackend:

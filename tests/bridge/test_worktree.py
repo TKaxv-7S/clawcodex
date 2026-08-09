@@ -64,11 +64,15 @@ async def test_create_then_remove_happy_path(git_repo: str) -> None:
         # The worktree exists on disk with the README from HEAD.
         assert os.path.isdir(expected)
         assert os.path.exists(os.path.join(expected, 'README.md'))
-        # ``git worktree list`` confirms the new worktree.
+        # ``git worktree list`` confirms the new worktree. Git prints
+        # paths with forward slashes on every platform (``C:/Users/…``
+        # on Windows) while ``expected`` was built with ``os.path.join``,
+        # so compare in git's separator form — a no-op on POSIX where
+        # os.sep is already '/'.
         out = subprocess.check_output(
             ['git', 'worktree', 'list'], cwd=git_repo,
         ).decode()
-        assert expected in out
+        assert expected.replace(os.sep, '/') in out
     finally:
         await remove_agent_worktree(paths)
 

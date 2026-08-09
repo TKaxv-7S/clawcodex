@@ -9,6 +9,7 @@ the plan critic flagged.
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -45,19 +46,20 @@ class TestSettingsPaths(unittest.TestCase):
     def test_destination_mapping(self) -> None:
         # Project tier is .clawcodex/ — NOT .claude/, which the real
         # Claude Code harness owns (cross-tool interference otherwise).
+        # Expectations built with os.path.join on the same inputs so the
+        # platform separator matches (byte-identical to the old literals on
+        # POSIX; backslash-joined on Windows, as the source correctly emits).
         self.assertEqual(
             settings_path_for_destination("localSettings", "/tmp/p"),
-            "/tmp/p/.clawcodex/settings.local.json",
+            os.path.join("/tmp/p", ".clawcodex", "settings.local.json"),
         )
         self.assertEqual(
             settings_path_for_destination("projectSettings", "/tmp/p"),
-            "/tmp/p/.clawcodex/settings.json",
+            os.path.join("/tmp/p", ".clawcodex", "settings.json"),
         )
         # The live user_settings_path() is conftest-isolated in tests
         # (_isolate_user_permission_settings), so lock the canonical user
         # tier via the constant it derives from.
-        import os
-
         from src.permissions import settings_paths as sp_mod
 
         self.assertEqual(
@@ -79,7 +81,8 @@ class TestSettingsPaths(unittest.TestCase):
             },
         )
         self.assertEqual(
-            paths["local_settings_path"], "/tmp/p/.clawcodex/settings.local.json"
+            paths["local_settings_path"],
+            os.path.join("/tmp/p", ".clawcodex", "settings.local.json"),
         )
 
 

@@ -12,6 +12,7 @@ Acceptance criteria:
 
 from __future__ import annotations
 
+import functools
 import os
 import shutil
 import subprocess
@@ -19,6 +20,8 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from src.skills.bundled_skills import clear_bundled_skills
 from src.skills.create import create_skill
@@ -41,6 +44,23 @@ from src.skills.loader import (
     load_skills_from_skills_dir,
 )
 from src.skills.model import Skill
+
+
+@functools.lru_cache(maxsize=1)
+def _can_symlink() -> bool:
+    """os.symlink needs Developer Mode/admin on Windows — probe once."""
+    with tempfile.TemporaryDirectory() as probe:
+        try:
+            os.symlink(os.path.join(probe, "src"), os.path.join(probe, "dst"))
+        except (OSError, NotImplementedError):
+            return False
+    return True
+
+
+_requires_symlinks = pytest.mark.skipif(
+    not _can_symlink(),
+    reason="requires symlink support (Windows: enable Developer Mode)",
+)
 
 
 class _IsolatedHomeMixin:
@@ -71,6 +91,7 @@ class _IsolatedHomeMixin:
 
 
 class TestFileIdentity(unittest.TestCase):
+    @_requires_symlinks
     def test_returns_realpath(self) -> None:
         with tempfile.TemporaryDirectory() as t:
             p = Path(t) / "f.txt"
@@ -79,6 +100,7 @@ class TestFileIdentity(unittest.TestCase):
             link.symlink_to(p)
             self.assertEqual(_get_file_identity(str(link)), str(p.resolve()))
 
+    @_requires_symlinks
     def test_broken_symlink_returns_path_or_none(self) -> None:
         # `os.path.realpath` on a broken symlink returns the target path
         # without resolving it; either result is acceptable as long as
@@ -92,6 +114,7 @@ class TestFileIdentity(unittest.TestCase):
 
 
 class TestDedupByRealpath(unittest.TestCase):
+    @_requires_symlinks
     def test_same_realpath_drops_later_entries(self) -> None:
         with tempfile.TemporaryDirectory() as t:
             sk = Path(t) / "s"
@@ -241,6 +264,7 @@ class TestSymlinkDedup(_IsolatedHomeMixin, unittest.TestCase):
         self._tmp.cleanup()
         clear_skill_caches(); clear_dynamic_skills(); clear_skill_registry()
 
+    @_requires_symlinks
     def test_symlink_to_project_skill_collapses_to_one(self) -> None:
         # AC#2: ~/.clawcodex/skills/foo → <proj>/.clawcodex/skills/foo
         proj_skill = self._project / ".clawcodex" / "skills" / "foo"

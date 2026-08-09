@@ -210,13 +210,22 @@ class TestBashTool(ToolSystemTests):
         child = self.root / "child"
         child.mkdir()
 
+        # ``as_posix()`` so the path survives bash word-splitting on every
+        # platform: unquoted backslashes are shell escapes, and Git Bash
+        # accepts ``C:/...`` drive paths. On POSIX it's identical to str().
         out = BashTool.call(
-            {"command": f"cd {child} && printf executed > marker && pwd"},
+            {"command": f"cd {child.as_posix()} && printf executed > marker && pwd"},
             self.ctx,
         ).output
 
         self.assertEqual(out["exit_code"], 0)
-        self.assertEqual(out["stdout"].strip(), str(child))
+        if os.name == "nt":
+            # In-shell ``pwd`` prints the MSYS spelling (``/c/Users/...``) —
+            # assert on the tail; the persistent-cwd contract below is the
+            # strong cross-platform assertion.
+            self.assertTrue(out["stdout"].strip().endswith("/child"))
+        else:
+            self.assertEqual(out["stdout"].strip(), str(child))
         self.assertEqual((child / "marker").read_text(encoding="utf-8"), "executed")
         self.assertEqual(self.ctx.cwd, child)
 
@@ -225,7 +234,10 @@ class TestBashTool(ToolSystemTests):
         # simulate clawcodex's REPL inheriting a terminal -- the failure mode
         # the ``stdin=DEVNULL`` fix prevents. Returns the call's output dict.
         import os
-        import pty
+        try:
+            import pty
+        except ImportError:  # pragma: no cover - Windows has no pty at all
+            self.skipTest("pty unavailable on this platform")
         if not hasattr(pty, "openpty"):  # pragma: no cover - non-POSIX
             self.skipTest("openpty unavailable")
         master, slave = pty.openpty()

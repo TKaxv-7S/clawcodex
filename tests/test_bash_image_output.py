@@ -26,6 +26,7 @@ from src.tool_system.tools.bash.image_output import (
     is_image_output,
     parse_data_uri,
 )
+from src.utils.shell_platform import to_shell_path
 
 
 class TestIsImageOutput(unittest.TestCase):
@@ -189,8 +190,15 @@ class TestBashImageE2E(unittest.TestCase):
         png_path = self.root / "tiny.png"
         png_path.write_bytes(png_bytes)
         expected_b64 = base64.b64encode(png_bytes).decode("ascii")
-        # printf the data URI to stdout (no trailing newline matters)
-        command = f"printf 'data:image/png;base64,%s' \"$(base64 < {png_path} | tr -d '\\n')\""
+        # printf the data URI to stdout (no trailing newline matters).
+        # The path is embedded in a bash script, where backslashes are
+        # escape characters — render it via to_shell_path (forward
+        # slashes on Windows, identity on POSIX) or Git Bash mangles
+        # ``C:\Users\…`` into ``C:Users…`` and base64 reads nothing.
+        command = (
+            f"printf 'data:image/png;base64,%s' "
+            f"\"$(base64 < {to_shell_path(png_path)} | tr -d '\\n')\""
+        )
         result = self.registry.dispatch(
             ToolCall(name="Bash", input={"command": command}),
             self.ctx,

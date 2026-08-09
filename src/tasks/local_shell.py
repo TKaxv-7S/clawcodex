@@ -14,7 +14,6 @@ for ``stop_task`` (Phase 5).
 """
 from __future__ import annotations
 
-import os
 import logging
 import subprocess
 from dataclasses import dataclass, field
@@ -146,7 +145,7 @@ class LocalShellTask:
         # mark must live here — not in stop_background_bash, which stop_task
         # only reaches AFTER the first SIGTERM has often already killed the
         # process (its proc.poll() gate then bails before marking). Marking
-        # BEFORE os.killpg also closes the reaper-vs-killer race: the reaper is
+        # BEFORE the tree kill also closes the reaper-vs-killer race: the reaper is
         # blocked in proc.wait() and cannot wake until the signal is delivered,
         # by which point notified=True is committed — so the reaper's
         # enqueue_shell_notification no-ops instead of sending a spurious
@@ -159,10 +158,11 @@ class LocalShellTask:
             return prev
 
         registry.update(task_id, _mark_killed)
-        try:
-            os.killpg(os.getpgid(proc.pid), 15)
-        except (ProcessLookupError, PermissionError):
-            return
+        # Tree kill: process group on POSIX, ``taskkill /T`` on Windows
+        # (``os.killpg`` doesn't exist there). Never raises.
+        from src.utils.shell_platform import kill_process_tree
+
+        kill_process_tree(proc.pid, force=False)
 
 
 async def kill_shell_tasks_for_agent(

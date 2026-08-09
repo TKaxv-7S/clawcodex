@@ -72,8 +72,8 @@ class TestTeammateBlock:
         marker_ti = tmp_path / "ti"
         ctx = _ctx(
             hooks={
-                "TaskCompleted": _hook(f"touch {marker_tc}"),
-                "TeammateIdle": _hook(f"touch {marker_ti}"),
+                "TaskCompleted": _hook(f"touch {marker_tc.as_posix()}"),
+                "TeammateIdle": _hook(f"touch {marker_ti.as_posix()}"),
             },
             tasks=dict(OWNED_TASK),
         )
@@ -84,7 +84,7 @@ class TestTeammateBlock:
     def test_non_owned_and_completed_tasks_skipped(self, tmp_path):
         marker = tmp_path / "tc"
         ctx = _ctx(
-            hooks={"TaskCompleted": _hook(f"touch {marker}")},
+            hooks={"TaskCompleted": _hook(f"touch {marker.as_posix()}")},
             tasks=dict(OTHER_TASKS),
         )
         _drive(ctx)
@@ -94,8 +94,8 @@ class TestTeammateBlock:
         marker = tmp_path / "m"
         ctx = _ctx(
             hooks={
-                "TaskCompleted": _hook(f"touch {marker}"),
-                "TeammateIdle": _hook(f"touch {marker}"),
+                "TaskCompleted": _hook(f"touch {marker.as_posix()}"),
+                "TeammateIdle": _hook(f"touch {marker.as_posix()}"),
             },
             teammate=False,
             tasks=dict(OWNED_TASK),
@@ -107,7 +107,7 @@ class TestTeammateBlock:
         """The split-gate fix: only TeammateIdle configured (no Stop /
         SubagentStop) must still reach the teammate block."""
         marker = tmp_path / "ti"
-        ctx = _ctx(hooks={"TeammateIdle": _hook(f"touch {marker}")})
+        ctx = _ctx(hooks={"TeammateIdle": _hook(f"touch {marker.as_posix()}")})
         _drive(ctx)
         assert marker.exists()
 
@@ -164,7 +164,7 @@ class TestExecutors:
         """The hook's stdin carries the TaskCompletedHookInput fields."""
         out = tmp_path / "stdin.json"
         ctx = _ctx(
-            hooks={"TaskCompleted": _hook(f"cat > {out}")},
+            hooks={"TaskCompleted": _hook(f"cat > {out.as_posix()}")},
             tasks=dict(OWNED_TASK),
         )
         _drive(ctx)
@@ -182,7 +182,7 @@ class TestExecutors:
 
     def test_teammate_idle_stdin_contract(self, tmp_path):
         out = tmp_path / "stdin.json"
-        ctx = _ctx(hooks={"TeammateIdle": _hook(f"cat > {out}")})
+        ctx = _ctx(hooks={"TeammateIdle": _hook(f"cat > {out.as_posix()}")})
         _drive(ctx)
         import json
 
@@ -230,8 +230,8 @@ class TestRealPathLiveness:
         marker_ti = tmp_path / "ti"
         mgr = MagicMock()
         mgr.snapshot = _Snapshot({
-            "TaskCompleted": _hook(f"touch {marker_tc}"),
-            "TeammateIdle": _hook(f"touch {marker_ti}"),
+            "TaskCompleted": _hook(f"touch {marker_tc.as_posix()}"),
+            "TeammateIdle": _hook(f"touch {marker_ti.as_posix()}"),
         })
         tm_ctx.hook_config_manager = mgr
 
@@ -258,8 +258,8 @@ def test_task_completed_runs_before_teammate_idle(tmp_path):
     log = tmp_path / "order"
     ctx = _ctx(
         hooks={
-            "TaskCompleted": _hook(f"echo tc >> {log}"),
-            "TeammateIdle": _hook(f"echo ti >> {log}"),
+            "TaskCompleted": _hook(f"echo tc >> {log.as_posix()}"),
+            "TeammateIdle": _hook(f"echo ti >> {log.as_posix()}"),
         },
         tasks=dict(OWNED_TASK),
     )
@@ -276,7 +276,7 @@ def test_core_stop_prevent_returns_before_teammate_block(tmp_path):
     ctx = _ctx(
         hooks={
             "SubagentStop": _hook(f"echo '{payload}'"),
-            "TeammateIdle": _hook(f"touch {marker}"),
+            "TeammateIdle": _hook(f"touch {marker.as_posix()}"),
         },
     )
     _, result = _drive(ctx)
@@ -303,7 +303,7 @@ def test_permission_mode_threaded_to_stdin(tmp_path):
     import json as _json
 
     out = tmp_path / "stdin.json"
-    ctx = _ctx(hooks={"TeammateIdle": _hook(f"cat > {out}")})
+    ctx = _ctx(hooks={"TeammateIdle": _hook(f"cat > {out.as_posix()}")})
     ctx.permission_context.mode = "acceptEdits"
     _drive(ctx)
     data = _json.loads(out.read_text())

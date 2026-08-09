@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 from pathlib import Path
 
@@ -119,6 +120,10 @@ def test_read_missing_inbox_returns_empty(tmp_path: Path) -> None:
     assert messages == []
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX permission bits don't exist on Windows",
+)
 def test_inbox_file_has_user_only_permissions(tmp_path: Path) -> None:
     """0o600 — mailboxes can carry sensitive plan content."""
     msg = TeammateMessage(from_="x", text="x", timestamp="2026-05-08T12:00:00Z")

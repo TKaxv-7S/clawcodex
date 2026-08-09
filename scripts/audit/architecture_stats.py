@@ -119,7 +119,12 @@ def _build_abstraction(name: str, package_rel: str, root: Path) -> AbstractionSt
     high = sorted(
         (
             HighDensityFile(
-                relative_path=str(p.relative_to(root)),
+                # POSIX-style on every host: these are repo-relative REPORT
+                # identifiers that must prefix-match the forward-slash
+                # package keys in ABSTRACTION_MAP (and keep the rendered
+                # markdown byte-identical across platforms), not native
+                # filesystem paths.
+                relative_path=p.relative_to(root).as_posix(),
                 line_count=lc,
             )
             for p, lc in sized

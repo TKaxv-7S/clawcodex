@@ -320,6 +320,13 @@ async def _serve_stdio(workspace: str, agent_config: AgentServerConfig) -> int:
 
     loop = asyncio.get_running_loop()
     out = sys.stdout
+    # Windows text-mode stdout translates "\n" → "\r\n". The Ink client's
+    # readline tolerates it, but the frames are a protocol, not console text —
+    # pin newline handling so every platform emits identical bytes.
+    try:
+        out.reconfigure(newline="\n")
+    except (AttributeError, OSError, ValueError):  # pragma: no cover - non-file stdout
+        pass
 
     async def outbound() -> None:
         """Agent → stdout: one JSON object per line, flushed."""

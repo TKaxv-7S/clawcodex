@@ -224,12 +224,21 @@ def _flag_probe_stub(tmp_path, monkeypatch, expect: str) -> None:
 
     `expect` pins the exact `--permission-mode <mode> [--allow-…]` ordering
     that `_agent_server_cmd` emits — intentional, so a reorder of that builder
-    surfaces here rather than silently changing the spawned backend cmd."""
+    surfaces here rather than silently changing the spawned backend cmd.
+    The stub decodes the env var exactly like the real Ink client
+    (gatewayClient.resolveAgentCmd): JSON array first, whitespace-split
+    fallback — the JSON form is what keeps interpreter paths with spaces
+    intact."""
     child = tmp_path / "fake_tui.py"
     child.write_text(textwrap.dedent(
         f"""
-        import os, sys
-        cmd = os.environ.get("CLAWCODEX_AGENT_SERVER_CMD", "")
+        import json, os, sys
+        raw = os.environ.get("CLAWCODEX_AGENT_SERVER_CMD", "")
+        try:
+            argv = json.loads(raw)
+        except ValueError:
+            argv = raw.split()
+        cmd = " ".join(argv)
         sys.exit(0 if {expect!r} in cmd else 4)
         """
     ))
@@ -313,11 +322,17 @@ def test_launcher_hands_client_a_runnable_backend_cmd(tmp_path, monkeypatch):
     child = tmp_path / "fake_tui.py"
     child.write_text(textwrap.dedent(
         """
-        import os, subprocess, sys
-        cmd = os.environ.get("CLAWCODEX_AGENT_SERVER_CMD", "")
-        if not cmd:
+        import json, os, subprocess, sys
+        raw = os.environ.get("CLAWCODEX_AGENT_SERVER_CMD", "")
+        if not raw:
             sys.exit(2)
-        r = subprocess.run(cmd.split() + ["--help"], capture_output=True, timeout=120)
+        # Decode like the real client: JSON array first (survives spaces in
+        # the interpreter path), whitespace split as the legacy fallback.
+        try:
+            argv = json.loads(raw)
+        except ValueError:
+            argv = raw.split()
+        r = subprocess.run(argv + ["--help"], capture_output=True, timeout=120)
         sys.exit(0 if r.returncode == 0 else 4)
         """
     ))

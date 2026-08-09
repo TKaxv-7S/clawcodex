@@ -510,6 +510,16 @@ def _grant_directory(tool_name: str, path: str) -> str | None:
         directory = os.path.dirname(_abs_path(path))
     if not directory or directory == "/":
         return None
+    # Windows: ``_abs_path`` fully qualifies, so the root comes back as the
+    # drive/UNC spelling (``C:\``, ``\\server\share``) — never the literal
+    # ``/`` the guard above catches. A root is the one path that is its own
+    # dirname, on every platform; refusing it here is the same "never register
+    # the whole filesystem" rule, now covering the whole-drive/whole-share
+    # case a real Windows user would hit (a file at ``C:\a.py`` must not mint
+    # a ``C:\`` session grant). Deny-side only (can only *refuse* a grant) and
+    # NT-guarded so POSIX output stays byte-identical.
+    if os.name == "nt" and os.path.dirname(directory) == directory:
+        return None
     return directory
 
 

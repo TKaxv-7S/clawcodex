@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import functools
 import os
+import sys
 from datetime import datetime
 from typing import Any
 
@@ -1239,8 +1240,19 @@ def _build_env_section(cwd: str | None, use_cache: bool) -> SystemPromptSection 
     # "safe after the DYNAMIC_BOUNDARY" rationale was invalidated when the
     # REQUEST group gained its own marker).
     parts.append(f"- Date: {_get_session_start_date_iso()}")
-    shell = os.environ.get("SHELL", "unknown")
-    parts.append(f"- Shell: {shell}")
+    # ``SHELL`` is a POSIX convention; Windows sets ``COMSPEC`` instead. The
+    # Bash tool itself runs Git Bash there, so name that when we found one —
+    # the model should keep writing POSIX commands, not cmd.exe syntax.
+    shell = os.environ.get("SHELL")
+    if not shell and sys.platform == "win32":
+        try:
+            from src.utils.shell_platform import find_bash
+
+            shell = find_bash()
+        except Exception:
+            shell = None
+        shell = shell or os.environ.get("COMSPEC")
+    parts.append(f"- Shell: {shell or 'unknown'}")
     try:
         parts.append(f"- User: {getpass.getuser()}")
     except Exception:

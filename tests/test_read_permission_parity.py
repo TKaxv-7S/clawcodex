@@ -49,7 +49,14 @@ def _read_behavior(ctx: ToolContext, file_path: str) -> str:
 
 class TestBudgetDirHelper(unittest.TestCase):
     def test_root_is_shared_tmp_location(self) -> None:
-        self.assertEqual(TOOL_RESULT_BUDGET_ROOT, Path("/tmp/claw_codex_budget"))
+        # gettempdir() IS /tmp on Linux CI; on Windows it's %TEMP% (the
+        # source deliberately follows the platform temp root).
+        import tempfile
+
+        self.assertEqual(
+            TOOL_RESULT_BUDGET_ROOT,
+            Path(tempfile.gettempdir()) / "claw_codex_budget",
+        )
 
     def test_dir_is_process_scoped(self) -> None:
         self.assertEqual(
@@ -73,7 +80,11 @@ class TestCheckReadableInternalPath(unittest.TestCase):
         self.assertTrue(check_readable_internal_path(p, _ctx()))
 
     def test_scratchpad_is_internal(self) -> None:
-        tmp = os.environ.get("TMPDIR", "/tmp")
+        # Same TMPDIR-else-gettempdir resolution the source uses (a literal
+        # "/tmp" fallback here would diverge on Windows).
+        import tempfile
+
+        tmp = os.environ.get("TMPDIR") or tempfile.gettempdir()
         p = str(Path(tmp) / "claude-scratchpad" / "note.txt")
         self.assertTrue(check_readable_internal_path(p, _ctx()))
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -127,17 +128,25 @@ def test_run_rg_with_abort_returns_promptly_when_subprocess_blocks(
     threading.Thread(target=_trip_when_ready, daemon=True).start()
 
     # ``sleep 60`` is the fastest portable "subprocess that blocks
-    # indefinitely". The poll/kill machinery is identical to the rg
+    # indefinitely" — on POSIX. Windows ships no ``sleep.exe`` on PATH,
+    # so spin the same blocker out of the interpreter we know exists;
+    # the supervisor under test only cares that the child never exits
+    # on its own. The poll/kill machinery is identical to the rg
     # path; running it against a non-rg binary isolates the abort
     # logic from rg-specific behaviour (which the contract tests in
     # test_glob/test_grep_propagates_abort_as_abort_error already cover).
+    blocker = (
+        [sys.executable, "-c", "import time; time.sleep(60)"]
+        if sys.platform == "win32"
+        else ["sleep", "60"]
+    )
     start = time.monotonic()
     # Patch ready so the trip thread fires once Popen has returned.
     # We need the original signal-check inside _run_rg_with_abort, so
     # we let it run end-to-end and just observe wall-clock.
     ready.set()
     returncode, stdout, stderr, aborted, timed_out = _run_rg_with_abort(
-        ["sleep", "60"],
+        blocker,
         timeout_s=60.0,
         abort_signal=controller.signal,
     )

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
+
 import pytest
 from src.services.mcp.transport import (
     JsonRpcMessage,
@@ -9,6 +11,17 @@ from src.services.mcp.transport import (
     HttpTransport,
     SseTransport,
 )
+
+# Cross-platform stand-ins for the unix helpers these tests historically
+# spawned (`echo`, `cat`, `printf`) — none exist on a native-Windows PATH,
+# and the interpreter running the suite is the one binary guaranteed
+# everywhere. Behavior on Linux is unchanged (same bytes on the wire).
+_PY = sys.executable
+_CAT_ARGS = [
+    "-u",
+    "-c",
+    "import sys\nfor line in sys.stdin:\n    sys.stdout.write(line)\n    sys.stdout.flush()",
+]
 
 
 class TestJsonRpcMessage:
@@ -58,7 +71,7 @@ class TestStdioTransport:
 
     @pytest.mark.asyncio
     async def test_start_and_close_echo(self) -> None:
-        transport = StdioTransport(command="echo", args=["test"])
+        transport = StdioTransport(command=_PY, args=["-c", "print('test')"])
         await transport.start()
         assert transport.is_connected is True
         await transport.close()
@@ -66,7 +79,7 @@ class TestStdioTransport:
 
     @pytest.mark.asyncio
     async def test_send_receive_with_cat(self) -> None:
-        transport = StdioTransport(command="cat")
+        transport = StdioTransport(command=_PY, args=_CAT_ARGS)
         await transport.start()
         assert transport.is_connected
 
@@ -85,7 +98,7 @@ class TestStdioTransport:
         """Regression guard: confirms message boundaries are preserved across
         sequential sends. A buffering-bug regression (e.g. switching readline
         for read(N)) would surface here as merged or dropped messages."""
-        transport = StdioTransport(command="cat")
+        transport = StdioTransport(command=_PY, args=_CAT_ARGS)
         await transport.start()
 
         await transport.send(JsonRpcMessage(method="m1", id=1))
@@ -107,11 +120,15 @@ class TestStdioTransport:
     async def test_receive_strips_crlf_line_endings(self) -> None:
         """Regression guard: a Node-on-Windows / `print()`-on-Windows server may
         emit CRLF terminators. The receiver must strip both."""
-        # Use printf to write a CRLF-terminated JSON line to stdout.
-        crlf_payload = '{"jsonrpc":"2.0","method":"crlf","id":1}\r\n'
+        # Write a CRLF-terminated JSON line to stdout, byte-exact (buffer
+        # write sidesteps any platform newline translation).
         transport = StdioTransport(
-            command="printf",
-            args=["%s", crlf_payload],
+            command=_PY,
+            args=[
+                "-c",
+                "import sys; sys.stdout.buffer.write("
+                "b'{\"jsonrpc\":\"2.0\",\"method\":\"crlf\",\"id\":1}\\r\\n')",
+            ],
         )
         await transport.start()
         response = await asyncio.wait_for(transport.receive(), timeout=5.0)

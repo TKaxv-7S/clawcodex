@@ -482,7 +482,9 @@ def resolve_tool_results_dir(context: "ToolContext") -> Path:
     Preference order:
     1. ``~/.clawcodex/<workspace_basename>/<session_id>/tool-results/`` when the
        context has a session id.
-    2. ``/tmp/clawcodex_tool_results/<pid>/tool-results/`` as a fallback.
+    2. ``<system temp>/clawcodex_tool_results/<pid>/tool-results/`` as a
+       fallback (``tempfile.gettempdir()`` — ``/tmp`` on POSIX, ``%TEMP%`` on
+       Windows).
 
     The TS reference uses a more elaborate path layout (project-dir hashing
     in ``utils/sessionStorage.ts``); we keep it simple and Python-native.
@@ -499,4 +501,11 @@ def resolve_tool_results_dir(context: "ToolContext") -> Path:
             / str(session_id)
             / TOOL_RESULTS_SUBDIR
         )
-    return Path("/tmp") / "clawcodex_tool_results" / str(os.getpid()) / TOOL_RESULTS_SUBDIR
+    import tempfile
+
+    return (
+        Path(tempfile.gettempdir())
+        / "clawcodex_tool_results"
+        / str(os.getpid())
+        / TOOL_RESULTS_SUBDIR
+    )

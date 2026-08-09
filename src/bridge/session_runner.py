@@ -692,6 +692,31 @@ class _SpawnedSession:
                 f'interrupted signal={-returncode} pid={process.pid}'
             )
             status = 'interrupted'
+        elif (
+            sys.platform == 'win32'
+            and returncode == 1
+            and self._kill_requested
+            and not self._force_kill_requested
+        ):
+            # Windows cannot encode "terminated by signal" in the exit
+            # status: our graceful ``kill()`` goes through
+            # ``Popen.terminate`` → ``TerminateProcess(handle, 1)``, so
+            # the child reports plain exit code 1 and the POSIX branch
+            # above never matches. Node's child_process papers over the
+            # same gap by faking ``signalCode='SIGTERM'`` on Windows —
+            # which is how the TS reference still sees 'interrupted'
+            # there — so mirror it by trusting our own latched kill
+            # request. ``force_kill()`` deliberately stays 'failed',
+            # matching the POSIX SIGKILL (-9) classification, and the
+            # ``returncode == 1`` guard keeps a child that failed on its
+            # own (exit 2, exit 3, …) before the kill landed classified
+            # as 'failed', same as POSIX.
+            self._deps.on_debug(
+                f'[bridge:session] sessionId={self._session_id} '
+                f'interrupted (win32 TerminateProcess after kill()) '
+                f'pid={process.pid}'
+            )
+            status = 'interrupted'
         elif returncode == 0:
             self._deps.on_debug(
                 f'[bridge:session] sessionId={self._session_id} '

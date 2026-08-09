@@ -392,7 +392,9 @@ class TestSkillToolRuntimeIntegration(unittest.TestCase):
         ctx = ToolContext(workspace_root=self.root, session_id="my-session-42")
         out = SkillTool.call({"skill": "echo"}, ctx).output
         self.assertTrue(out["success"])
-        self.assertIn(f"DIR={skills_dir / 'echo'}", out["prompt"])
+        # Forward-slash form on every platform: the substitution engine
+        # normalizes ``\`` → ``/`` so values are bash-safe (== str() on POSIX).
+        self.assertIn(f"DIR={(skills_dir / 'echo').as_posix()}", out["prompt"])
         self.assertIn("SID=my-session-42", out["prompt"])
 
     def test_bundled_skill_no_header(self) -> None:

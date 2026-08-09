@@ -88,8 +88,13 @@ def normalize_case_for_comparison(path: str) -> str:
 
 
 def _is_within(child: Path, parent: Path) -> bool:
+    # ``os.path.normcase`` folds case (and ``/`` → ``\``) on Windows only —
+    # NTFS treats ``C:\Repo`` and ``c:\repo`` as the same directory, so a
+    # case-mismatched spelling must not defeat containment. On POSIX normcase
+    # is the identity, so behavior there is unchanged (deliberately: folding
+    # on a case-sensitive filesystem would equate genuinely different dirs).
     try:
-        child.relative_to(parent)
+        Path(os.path.normcase(str(child))).relative_to(os.path.normcase(str(parent)))
         return True
     except ValueError:
         return False
@@ -256,7 +261,11 @@ def get_write_scope(
 
 
 def get_scratchpad_dir() -> str:
-    tmp = os.environ.get("TMPDIR", "/tmp")
+    # ``TMPDIR`` first for POSIX parity with TS; ``tempfile.gettempdir()``
+    # covers Windows (%TEMP%/%TMP%) and any TMPDIR-less POSIX shell.
+    import tempfile
+
+    tmp = os.environ.get("TMPDIR") or tempfile.gettempdir()
     scratchpad = os.path.join(tmp, "claude-scratchpad")
     os.makedirs(scratchpad, exist_ok=True)
     return scratchpad
@@ -275,7 +284,9 @@ def _scratchpad_dir_path() -> str:
     """Scratchpad path *without* the ``makedirs`` side effect of
     :func:`get_scratchpad_dir` — safe to call from a permission check on every
     read."""
-    tmp = os.environ.get("TMPDIR", "/tmp")
+    import tempfile
+
+    tmp = os.environ.get("TMPDIR") or tempfile.gettempdir()
     return os.path.join(tmp, "claude-scratchpad")
 
 

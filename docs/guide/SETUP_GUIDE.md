@@ -5,9 +5,17 @@ Detailed installation and configuration for **clawcodex**. For a quick overview,
 ## Prerequisites
 
 - **Python 3.10+** (3.11 recommended)
-- **git**
+- **git** — on Windows, [Git for Windows](https://git-scm.com/download/win): its Git Bash is what the agent's shell tool runs commands with
 - **[uv](https://github.com/astral-sh/uv#installation)** (recommended)
 - An API key for at least one supported provider: Anthropic, OpenAI, Z.ai (GLM), MiniMax, OpenRouter, or DeepSeek
+
+> **Windows:** the CLI runs natively (PowerShell / cmd / Windows Terminal — no WSL
+> needed). The fastest path is the one-click installer:
+> `irm https://clawcodex.app/install.ps1 | iex` — it installs uv, provisions
+> Python, clones to `%USERPROFILE%\.clawcodex\clawcodex`, and puts `clawcodex`
+> on your PATH, with `doctor` / `verify` / `update` / `uninstall` subcommands.
+> The manual steps below also work in PowerShell (use
+> `.venv\Scripts\Activate.ps1` to activate).
 
 ## 1. Clone and install
 

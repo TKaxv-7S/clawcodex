@@ -82,6 +82,19 @@ def is_dangerous_removal_path(resolved_path: str) -> bool:
         return True
     if os.path.dirname(normalized) == "/":
         return True
+    # Windows spellings of the same critical tier: the drive root itself
+    # (``C:`` / ``C:/`` after the rstrip above) and its direct children
+    # (``C:/Windows``, ``C:/Users``) are to a Windows user exactly what ``/``
+    # and ``/etc`` are on POSIX — the checks above never see them because a
+    # drive-qualified path is not ``/``-rooted. ``splitdrive`` yields an empty
+    # drive for every POSIX path, so this branch cannot change POSIX behavior,
+    # and it only ever ADDS a refusal (deny-side: safe per the porting
+    # invariant).
+    drive, tail = os.path.splitdrive(normalized)
+    if drive:
+        tail = tail.rstrip("/")
+        if not tail or os.path.dirname(tail) == "/":
+            return True
     return False
 
 
@@ -190,6 +203,14 @@ def _output_redirects_within_roots(
     if not resolved_roots:
         return False
     for t in targets:
+        # Same drive-relative fail-closed rule as ``_write_paths_within_roots``
+        # (see the comment there): a ``C:x``-shaped redirect target cannot be
+        # statically contained, and joining it under ``cwd`` would vouch for a
+        # write we cannot place. POSIX-identical (splitdrive never yields a
+        # drive there); only ever adds a prompt.
+        t_drive, t_tail = os.path.splitdrive(t)
+        if t_drive and not t_tail.startswith(("/", "\\")):
+            return False
         try:
             rp = os.path.realpath(os.path.join(cwd, os.path.expanduser(t)))
         except OSError:
@@ -438,6 +459,19 @@ def _write_paths_within_roots(
         return False
 
     for cand in _extract_path_candidates(tokens) + _filter_out_flags(tokens[1:]):
+        # Windows drive-relative spellings (``C:x`` — typically the residue an
+        # unquoted ``C:\x`` leaves after the shell's backslash-escape
+        # processing) do not mean "under our cwd": their real target depends
+        # on the child process's own per-drive state, and bash-on-Windows
+        # treats the token as a literal name besides. ``ntpath.join`` would
+        # silently nest them under ``cwd`` and vouch for containment we cannot
+        # actually establish. Statically unresolvable → fail closed to the
+        # prompt, exactly like an unquoted ``$VAR``. ``splitdrive`` never
+        # yields a drive on POSIX, so POSIX behavior is byte-identical (and
+        # this can only ever turn an allow into a prompt — deny-side).
+        cand_drive, cand_tail = os.path.splitdrive(cand)
+        if cand_drive and not cand_tail.startswith(("/", "\\")):
+            return False
         try:
             rp = os.path.realpath(os.path.join(cwd, os.path.expanduser(cand)))
         except OSError:

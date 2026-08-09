@@ -81,7 +81,7 @@ class TestExecutorRespectsGate:
         marker = tmp_path / "user_hook_fired.txt"
         user_hook = HookConfig(
             type="command",
-            command=f"echo 'user' > {marker}",
+            command=f"echo 'user' > {marker.as_posix()}",
             source=HookSource.USER_SETTINGS,
         )
         ctx = _MockContext(
@@ -102,7 +102,7 @@ class TestExecutorRespectsGate:
         marker = tmp_path / "policy_hook_fired.txt"
         policy_hook = HookConfig(
             type="command",
-            command=f"echo 'policy' > {marker}",
+            command=f"echo 'policy' > {marker.as_posix()}",
             source=HookSource.POLICY_SETTINGS,
         )
         ctx = _MockContext(
@@ -126,12 +126,12 @@ class TestExecutorRespectsGate:
 
         user_hook = HookConfig(
             type="command",
-            command=f"echo 'u' > {user_marker}",
+            command=f"echo 'u' > {user_marker.as_posix()}",
             source=HookSource.USER_SETTINGS,
         )
         policy_hook = HookConfig(
             type="command",
-            command=f"echo 'p' > {policy_marker}",
+            command=f"echo 'p' > {policy_marker.as_posix()}",
             source=HookSource.POLICY_SETTINGS,
         )
         ctx = _MockContext(

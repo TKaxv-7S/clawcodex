@@ -154,7 +154,9 @@ async def test_options_extra_files_and_imported_desc(mem_env, monkeypatch):
     call = ui.select_calls[0]
     i_extra = call["values"].index(str(home / "extra.md"))
     i_imp = call["values"].index(str(home / "imported.md"))
-    assert call["labels"][i_extra] == "~/extra.md"
+    # _display_path abbreviates with the native separator ("~\..." on
+    # Windows); os.sep keeps the expectation exact on both platforms.
+    assert call["labels"][i_extra] == f"~{os.sep}extra.md"
     assert call["descriptions"][i_extra] is None
     assert call["descriptions"][i_imp] == "@-imported"  # parented -> TS desc
 
@@ -169,7 +171,11 @@ async def test_select_user_memory_creates_dir_and_file(mem_env):
     out = await MEMORY_COMMAND.run("", _ctx(cwd, ui=ui))
     assert isinstance(out, InteractiveOutcome)
     assert (home / ".clawcodex" / "CLAWCODEX.md").exists()
-    assert out.message.startswith("Memory file at ~/.clawcodex/CLAWCODEX.md. Open it in your editor.")
+    # Native-separator tilde abbreviation ("~\.clawcodex\..." on Windows).
+    expected_display = os.sep.join(["~", ".clawcodex", "CLAWCODEX.md"])
+    assert out.message.startswith(
+        f"Memory file at {expected_display}. Open it in your editor."
+    )
     assert "> To choose an editor, set the $EDITOR or $VISUAL environment variable." in out.message
     assert out.display == "system"
 
@@ -213,7 +219,8 @@ def test_display_path(tmp_path, monkeypatch):
     cwd = tmp_path / "w"
     cwd.mkdir()
     assert _display_path(str(cwd / "CLAWCODEX.md"), str(cwd)) == "CLAWCODEX.md"
-    assert _display_path(str(home / "x.md"), str(cwd)) == "~/x.md"
+    # Tilde abbreviation keeps the native separator ("~\x.md" on Windows).
+    assert _display_path(str(home / "x.md"), str(cwd)) == f"~{os.sep}x.md"
 
 
 # --------------------------------------------------------------------------- #

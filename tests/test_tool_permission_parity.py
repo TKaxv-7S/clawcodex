@@ -267,15 +267,19 @@ class TestSkillEmbeddedShellGated(_Base):
         ctx = _ctx(mode, self.ws)
         return _make_shell_executor(ctx, allowed, slash_command_name="/t")(command, False)
 
+    # NB: embedded paths are spelled with as_posix() throughout — identical
+    # strings on POSIX, while on Windows a raw C:\... f-string would be
+    # backslash-escape-mangled by bash (and by the gate's POSIX tokenizer)
+    # into a token naming no real file. Same convention as the hook tests.
     def test_declared_command_runs(self) -> None:
         marker = self.ws / "declared.marker"
-        self._exec(["Bash(touch:*)"], f"touch {marker}")
+        self._exec(["Bash(touch:*)"], f"touch {marker.as_posix()}")
         self.assertTrue(marker.exists(), "declared command should execute")
 
     def test_undeclared_command_blocked(self) -> None:
         # Hard-denied in default mode (matches TS — not prompted, not run).
         marker = self.ws / "undeclared.marker"
-        out = self._exec([], f"touch {marker}")
+        out = self._exec([], f"touch {marker.as_posix()}")
         self.assertFalse(marker.exists(), "undeclared command must NOT execute")
         self.assertIn("Error", out)
 
@@ -293,7 +297,7 @@ class TestSkillEmbeddedShellGated(_Base):
         with tempfile.TemporaryDirectory() as other:
             victim = Path(other) / "keep.txt"
             victim.write_text("keep")
-            out = self._exec(["Bash(rm:*)"], f"rm -rf {victim}")
+            out = self._exec(["Bash(rm:*)"], f"rm -rf {victim.as_posix()}")
             self.assertTrue(victim.exists(), "out-of-workspace rm must be blocked")
             self.assertIn("Error", out)
 
@@ -302,13 +306,13 @@ class TestSkillEmbeddedShellGated(_Base):
         # in-workspace, non-critical file (the declaration IS the grant).
         marker = self.ws / "declared_rm.marker"
         marker.write_text("x")
-        self._exec(["Bash(rm:*)"], f"rm -rf {marker}")
+        self._exec(["Bash(rm:*)"], f"rm -rf {marker.as_posix()}")
         self.assertFalse(marker.exists(), "declared in-workspace rm should run")
 
     def test_chained_command_blocked(self) -> None:
         # Chaining can't ride in on a single-command allow rule.
         marker = self.ws / "chain.marker"
-        out = self._exec(["Bash(echo:*)"], f"echo hi && touch {marker}")
+        out = self._exec(["Bash(echo:*)"], f"echo hi && touch {marker.as_posix()}")
         self.assertFalse(marker.exists(), "chained command must not run")
         self.assertIn("Error", out)
 
@@ -317,7 +321,7 @@ class TestSkillEmbeddedShellGated(_Base):
         # write path gate still blocks a dangerous-removal target — TS path-gates
         # Bash(*) writes too (checkPathConstraints precedes the allow rule).
         safe = self.ws / "bare_safe.marker"
-        self._exec(["Bash"], f"touch {safe}")
+        self._exec(["Bash"], f"touch {safe.as_posix()}")
         self.assertTrue(safe.exists(), "bare Bash grant should run in-workspace commands")
         # rm -rf ~ must never run, even under allow-all.
         out = self._exec(["Bash"], "rm -rf ~")
@@ -325,7 +329,7 @@ class TestSkillEmbeddedShellGated(_Base):
 
     def test_bypass_mode_runs_undeclared(self) -> None:
         marker = self.ws / "bypass.marker"
-        self._exec([], f"touch {marker}", mode="bypassPermissions")
+        self._exec([], f"touch {marker.as_posix()}", mode="bypassPermissions")
         self.assertTrue(marker.exists())
 
 

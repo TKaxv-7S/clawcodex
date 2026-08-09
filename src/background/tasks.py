@@ -3,9 +3,17 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 import threading
 import uuid
 from dataclasses import dataclass
+
+from src.utils.shell_platform import (
+    bash_env,
+    find_bash,
+    kill_process_tree,
+    popen_tree_kwargs,
+)
 
 _MAX_OUTPUT = 8000
 
@@ -31,13 +39,26 @@ class BackgroundTasks:
     def start(self, command: str, cwd: str, now: float = 0.0) -> BgTask:
         tid = uuid.uuid4().hex[:8]
         task = BgTask(id=tid, command=command, status="running", started=now)
+        # On Windows ``shell=True`` means cmd.exe — wrong for /bg commands
+        # written with POSIX semantics (same policy as the Bash tool and
+        # hooks). Route through Git Bash there when available; a bash-less
+        # Windows falls back to cmd.exe. ``popen_tree_kwargs`` keeps the
+        # spawned tree killable as a unit (see ``kill``).
+        win_bash = find_bash() if sys.platform == "win32" else None
+        if win_bash is not None:
+            spawn_args: object = [win_bash, "-c", command]
+            spawn_kwargs: dict[str, object] = {"shell": False, "env": bash_env()}
+        else:
+            spawn_args = command
+            spawn_kwargs = {"shell": True}
         proc = subprocess.Popen(  # noqa: S602 - intentional shell task, user-initiated
-            command,
-            shell=True,
+            spawn_args,
             cwd=cwd or None,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            **spawn_kwargs,
+            **popen_tree_kwargs(),
         )
         with self._lock:
             self._tasks[tid] = task
@@ -80,6 +101,10 @@ class BackgroundTasks:
             if t is not None and t.status == "running":
                 t.status = "killed"
         if proc is not None:
+            # Tree kill first (group on POSIX / taskkill on Windows) so the
+            # shell's children die with it; terminate() covers the edge where
+            # no group exists. Both are no-ops on an already-dead process.
+            kill_process_tree(proc.pid, force=False)
             try:
                 proc.terminate()
                 return True

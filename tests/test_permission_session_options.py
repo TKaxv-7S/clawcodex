@@ -128,8 +128,10 @@ class TestDefaultSessionSuggestions(unittest.TestCase):
         self.assertEqual(len(updates), 2)
         self.assertIsInstance(updates[0], PermissionUpdateSetMode)
         self.assertIsInstance(updates[1], PermissionUpdateAddDirectories)
-        # File tools grant the file's *parent* directory.
-        self.assertEqual(updates[1].directories, ("/other/place",))
+        # File tools grant the file's *parent* directory. Expectation built via
+        # abspath so the fake POSIX spelling gains a drive on Windows exactly
+        # as the suggestion builder's own abspath does (identity on POSIX).
+        self.assertEqual(updates[1].directories, (os.path.abspath("/other/place"),))
         self.assertEqual(updates[1].destination, "session")
 
     def test_file_edit_plan_mode_still_sets_accept_edits(self) -> None:
@@ -162,7 +164,7 @@ class TestDefaultSessionSuggestions(unittest.TestCase):
         )
         self.assertEqual(len(updates), 1)
         self.assertIsInstance(updates[0], PermissionUpdateAddDirectories)
-        self.assertEqual(updates[0].directories, ("/other",))
+        self.assertEqual(updates[0].directories, (os.path.abspath("/other"),))
 
     def test_read_within_roots_yields_content_less_session_rule(self) -> None:
         updates = default_session_suggestions(
@@ -182,7 +184,7 @@ class TestDefaultSessionSuggestions(unittest.TestCase):
         self.assertEqual(len(updates), 2)
         self.assertIsInstance(updates[0], PermissionUpdateAddRules)
         self.assertIsInstance(updates[1], PermissionUpdateAddDirectories)
-        self.assertEqual(updates[1].directories, ("/other",))
+        self.assertEqual(updates[1].directories, (os.path.abspath("/other"),))
 
     def test_grep_outside_roots_grants_the_path_itself(self) -> None:
         # Search tools target a directory, so the grant is the path verbatim
@@ -192,7 +194,7 @@ class TestDefaultSessionSuggestions(unittest.TestCase):
         )
         self.assertEqual(len(updates), 2)
         self.assertEqual(updates[0].rules[0].tool_name, "Grep")
-        self.assertEqual(updates[1].directories, ("/other/sub",))
+        self.assertEqual(updates[1].directories, (os.path.abspath("/other/sub"),))
 
     def test_webfetch_yields_domain_scoped_rule(self) -> None:
         # WebFetch now grants the HOST (TS WebFetchTool.ts:346), not all of

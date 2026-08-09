@@ -4,8 +4,10 @@ and gitignore-aware dynamic discovery (covers DEV-4).
 
 from __future__ import annotations
 
+import functools
 import os
 import subprocess
+import tempfile
 import unittest.mock as mock
 from pathlib import Path
 from typing import Iterator
@@ -64,11 +66,26 @@ def _write_skill(path: Path, body: str) -> None:
     path.write_text(body, encoding="utf-8")
 
 
+@functools.lru_cache(maxsize=1)
+def _can_symlink() -> bool:
+    """os.symlink needs Developer Mode/admin on Windows — probe once."""
+    with tempfile.TemporaryDirectory() as probe:
+        try:
+            os.symlink(os.path.join(probe, "src"), os.path.join(probe, "dst"))
+        except (OSError, NotImplementedError):
+            return False
+    return True
+
+
 # ======================================================================
 # D — Dedup + bare/policy modes
 # ======================================================================
 
 
+@pytest.mark.skipif(
+    not _can_symlink(),
+    reason="requires symlink support (Windows: enable Developer Mode)",
+)
 def test_symlinked_skill_collapses_to_single_entry(
     tmp_path: Path, isolated_home: Path
 ) -> None:

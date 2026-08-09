@@ -1,4 +1,4 @@
-"""Single-server-instance lockfile (POSIX flock; no-op on Windows).
+"""Single-server-instance lockfile (POSIX flock; msvcrt region lock on Windows).
 
 Reverse-engineered from ``main.tsx:3982`` which imports
 ``./server/lockfile.js``. The TS source isn't in this snapshot; the
@@ -9,9 +9,10 @@ POSIX ``fcntl.flock(LOCK_EX | LOCK_NB)`` is automatically released by
 the kernel when the holding process exits, so stale-lock-after-crash
 is automatic.
 
-Direct Connect server is not supported on Windows in production, so
-the no-op there is acceptable; a Windows port would need
-``msvcrt.locking`` or a sentinel-PID file.
+Windows uses ``msvcrt.locking(LK_NBLCK)`` on one byte of the same file.
+NT region locks are likewise dropped by the kernel when the holding
+process dies, so both platforms share the crash-recovery guarantee —
+no stale lockfile can wedge a restart.
 """
 
 from __future__ import annotations
@@ -58,10 +59,27 @@ class ServerLockfile:
         try:
             import fcntl
         except ImportError:
-            # Windows: no-op. We still create the file so subsequent
-            # ``release`` is symmetric.
+            # Windows: exclusive msvcrt region lock on 1 byte at offset 0
+            # (a fresh fd sits at offset 0; locking past EOF is legal on
+            # NT, so an empty lockfile locks fine). ``LK_NBLCK`` fails
+            # immediately instead of the LK_LOCK 10×1s retry dance —
+            # mirroring flock's LOCK_NB. Like flock, the kernel releases
+            # the region when the holding process dies, so
+            # stale-lock-after-crash recovery matches the POSIX path.
+            import msvcrt
+
             self._path.parent.mkdir(parents=True, exist_ok=True)
-            self._fd = os.open(self._path, os.O_RDWR | os.O_CREAT, 0o600)
+            fd = os.open(self._path, os.O_RDWR | os.O_CREAT, 0o600)
+            try:
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            except OSError as exc:
+                # A held region lock surfaces as EACCES — same meaning
+                # as BlockingIOError on the flock path below.
+                os.close(fd)
+                raise LockfileBusyError(
+                    f'Another claude server instance holds {self._path}'
+                ) from exc
+            self._fd = fd
             return
 
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -87,13 +105,28 @@ class ServerLockfile:
             except OSError:
                 pass
         except ImportError:
-            pass
+            # Windows: explicitly LK_UNLCK the byte locked in acquire()
+            # before closing. Closing the fd would drop the region too,
+            # but NT documents that implicitly-released locks may linger
+            # briefly — explicit unlock keeps re-acquire immediate.
+            # ``lseek`` back to 0 because unlock must target the same
+            # offset the lock was taken at.
+            try:
+                import msvcrt
+
+                os.lseek(self._fd, 0, os.SEEK_SET)
+                msvcrt.locking(self._fd, msvcrt.LK_UNLCK, 1)
+            except (ImportError, OSError):
+                pass
         try:
             os.close(self._fd)
         except OSError:
             pass
         self._fd = None
         # Best-effort unlink so the file doesn't accumulate over restarts.
+        # On Windows this raises PermissionError (an OSError) when another
+        # process still has the file open — fine: the region lock is gone,
+        # so the next acquire() reuses the existing file and locks it.
         try:
             self._path.unlink()
         except OSError:

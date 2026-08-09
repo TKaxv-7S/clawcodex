@@ -33,33 +33,35 @@ class TestSetupPermissionsBasic(unittest.TestCase):
 
 class TestSetupPermissionsFromFile(unittest.TestCase):
     def test_loads_user_settings(self) -> None:
+        # Leave the `with` (closing the handle) BEFORE using/unlinking the
+        # file: Windows refuses to delete a file with an open handle
+        # (WinError 32), while POSIX never cared either way.
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump({
                 "permissions": {
                     "allow": ["Bash(ls*)"],
                 },
             }, f)
-            f.flush()
-            try:
-                result = setup_permissions(user_settings_path=f.name)
-                self.assertTrue(len(result.context.always_allow_rules) > 0)
-            finally:
-                os.unlink(f.name)
+        try:
+            result = setup_permissions(user_settings_path=f.name)
+            self.assertTrue(len(result.context.always_allow_rules) > 0)
+        finally:
+            os.unlink(f.name)
 
     def test_dangerous_rule_warning(self) -> None:
+        # Close-before-unlink: see test_loads_user_settings.
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump({
                 "permissions": {
                     "allow": ["Bash(python*)"],
                 },
             }, f)
-            f.flush()
-            try:
-                result = setup_permissions(user_settings_path=f.name)
-                self.assertTrue(len(result.warnings) > 0)
-                self.assertEqual(result.warnings[0].tool_name, "Bash")
-            finally:
-                os.unlink(f.name)
+        try:
+            result = setup_permissions(user_settings_path=f.name)
+            self.assertTrue(len(result.warnings) > 0)
+            self.assertEqual(result.warnings[0].tool_name, "Bash")
+        finally:
+            os.unlink(f.name)
 
     def test_missing_file_no_error(self) -> None:
         result = setup_permissions(user_settings_path="/nonexistent/path.json")
@@ -78,6 +80,7 @@ class TestSetupPermissionsCLI(unittest.TestCase):
 
 class TestShadowedRules(unittest.TestCase):
     def test_detects_shadowed(self) -> None:
+        # Close-before-unlink: see TestSetupPermissionsFromFile.
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump({
                 "permissions": {
@@ -85,45 +88,44 @@ class TestShadowedRules(unittest.TestCase):
                     "deny": ["Bash"],
                 },
             }, f)
-            f.flush()
-            try:
-                result = setup_permissions(user_settings_path=f.name)
-                self.assertTrue(len(result.shadowed_rules) > 0)
-            finally:
-                os.unlink(f.name)
+        try:
+            result = setup_permissions(user_settings_path=f.name)
+            self.assertTrue(len(result.shadowed_rules) > 0)
+        finally:
+            os.unlink(f.name)
 
 
 class TestPersistSessionRule(unittest.TestCase):
     def test_persists_rule(self) -> None:
+        # Close-before-unlink: see TestSetupPermissionsFromFile.
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump({}, f)
-            f.flush()
-            try:
-                rule_value = PermissionRuleValue(tool_name="Bash", rule_content="ls*")
-                success = persist_session_rule(f.name, rule_value, "allow")
-                self.assertTrue(success)
+        try:
+            rule_value = PermissionRuleValue(tool_name="Bash", rule_content="ls*")
+            success = persist_session_rule(f.name, rule_value, "allow")
+            self.assertTrue(success)
 
-                with open(f.name) as rf:
-                    data = json.load(rf)
-                self.assertIn("permissions", data)
-                self.assertIn("allow", data["permissions"])
-            finally:
-                os.unlink(f.name)
+            with open(f.name) as rf:
+                data = json.load(rf)
+            self.assertIn("permissions", data)
+            self.assertIn("allow", data["permissions"])
+        finally:
+            os.unlink(f.name)
 
     def test_no_duplicates(self) -> None:
+        # Close-before-unlink: see TestSetupPermissionsFromFile.
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump({}, f)
-            f.flush()
-            try:
-                rule_value = PermissionRuleValue(tool_name="Bash", rule_content="ls*")
-                persist_session_rule(f.name, rule_value, "allow")
-                persist_session_rule(f.name, rule_value, "allow")
+        try:
+            rule_value = PermissionRuleValue(tool_name="Bash", rule_content="ls*")
+            persist_session_rule(f.name, rule_value, "allow")
+            persist_session_rule(f.name, rule_value, "allow")
 
-                with open(f.name) as rf:
-                    data = json.load(rf)
-                self.assertEqual(len(data["permissions"]["allow"]), 1)
-            finally:
-                os.unlink(f.name)
+            with open(f.name) as rf:
+                data = json.load(rf)
+            self.assertEqual(len(data["permissions"]["allow"]), 1)
+        finally:
+            os.unlink(f.name)
 
 
 class TestValidatePermissionRules(unittest.TestCase):

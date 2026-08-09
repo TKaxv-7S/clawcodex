@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import functools
 import os
 import tempfile
 import unittest
 from pathlib import Path
+
+import pytest
 
 from src.memdir.team_mem_paths import (
     PathTraversalError,
@@ -27,6 +30,23 @@ _TRACKED_ENV = (
     "CLAUDE_CODE_SIMPLE",
     "CLAUDE_CODE_REMOTE",
     "CLAUDE_CODE_REMOTE_MEMORY_DIR",
+)
+
+
+@functools.lru_cache(maxsize=1)
+def _can_symlink() -> bool:
+    """os.symlink needs Developer Mode/admin on Windows — probe once."""
+    with tempfile.TemporaryDirectory() as probe:
+        try:
+            os.symlink(os.path.join(probe, "src"), os.path.join(probe, "dst"))
+        except (OSError, NotImplementedError):
+            return False
+    return True
+
+
+_requires_symlinks = pytest.mark.skipif(
+    not _can_symlink(),
+    reason="requires symlink support (Windows: enable Developer Mode)",
 )
 
 
@@ -188,6 +208,7 @@ class ValidateTeamMemWritePathTest(_EnvFixture):
         with self.assertRaises(PathTraversalError):
             validate_team_mem_write_path(path)
 
+    @_requires_symlinks
     def test_symlink_escape_rejected(self):
         # Create a symlink inside teamDir pointing to a sibling outside.
         with tempfile.TemporaryDirectory() as outside:
@@ -240,6 +261,7 @@ class ValidateTeamMemKeyTest(_EnvFixture):
         with self.assertRaises(PathTraversalError):
             validate_team_mem_key("foo\\bar")
 
+    @_requires_symlinks
     def test_symlink_escape_rejected(self):
         with tempfile.TemporaryDirectory() as outside:
             link = os.path.join(get_team_mem_path(), "evil-link")
@@ -276,6 +298,7 @@ class RealpathDeepestExistingTest(_EnvFixture):
         result = _realpath_deepest_existing(str(f))
         self.assertEqual(result, os.path.realpath(str(f)))
 
+    @_requires_symlinks
     def test_dangling_symlink_detected(self):
         # Symlink pointing to a non-existent target — writing through
         # this would still follow the link and create the target outside

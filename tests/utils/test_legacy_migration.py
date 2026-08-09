@@ -11,8 +11,11 @@ The safety contract under test:
 
 from __future__ import annotations
 
+import functools
 import json
 import os
+import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -24,11 +27,24 @@ from src.utils.clawcodex_dirs import (
 )
 
 
+@functools.lru_cache(maxsize=1)
+def _can_symlink() -> bool:
+    """os.symlink needs Developer Mode/admin on Windows — probe once."""
+    with tempfile.TemporaryDirectory() as probe:
+        try:
+            os.symlink(os.path.join(probe, "src"), os.path.join(probe, "dst"))
+        except (OSError, NotImplementedError):
+            return False
+    return True
+
+
 @pytest.fixture()
 def fake_home(monkeypatch, tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
+    # Windows Path.home() reads USERPROFILE, not HOME — fake both.
+    monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.delenv("CLAWCODEX_CONFIG_DIR", raising=False)
     # conftest disables migration suite-wide; these tests are the ones
     # that exercise it (against the fake home above).
@@ -61,9 +77,17 @@ def test_user_config_dir_default_and_env(fake_home, monkeypatch):
 
 def test_managed_config_dir_default_and_env(monkeypatch):
     monkeypatch.delenv("CLAWCODEX_MANAGED_CONFIG_DIR", raising=False)
-    assert str(get_managed_config_dir()) == "/etc/clawcodex"
+    if sys.platform == "win32":
+        # Windows default is %ProgramData%\ClawCodex (clawcodex_dirs branch).
+        expected = os.path.join(
+            os.environ.get("ProgramData", r"C:\ProgramData"), "ClawCodex"
+        )
+    else:
+        expected = "/etc/clawcodex"
+    assert str(get_managed_config_dir()) == expected
     monkeypatch.setenv("CLAWCODEX_MANAGED_CONFIG_DIR", "/opt/policy")
-    assert str(get_managed_config_dir()) == "/opt/policy"
+    # Path-compare: str() of "/opt/policy" is "\opt\policy" on Windows.
+    assert get_managed_config_dir() == Path("/opt/policy")
 
 
 # ---------------------------------------------------------------------------
@@ -184,6 +208,10 @@ def test_user_migration_env_override_destination(fake_home, monkeypatch):
     assert (custom / lm.MARKER_FILENAME).exists()
 
 
+@pytest.mark.skipif(
+    not _can_symlink(),
+    reason="requires symlink support (Windows: enable Developer Mode)",
+)
 def test_user_migration_preserves_symlinks_as_symlinks(fake_home):
     legacy = fake_home / ".claude"
     (legacy / "skills" / "linked").mkdir(parents=True)

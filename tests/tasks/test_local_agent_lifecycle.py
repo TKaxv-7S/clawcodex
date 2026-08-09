@@ -58,7 +58,10 @@ def test_register_async_agent_sets_transcript_output_file() -> None:
     assert state.id == agent_id
     assert state.status == "running"
     assert state.output_file.endswith(f"{agent_id}.jsonl")
-    assert ".clawcodex/transcripts" in state.output_file
+    # ``output_file`` is built with the platform separator (backslashes
+    # on Windows); normalize to POSIX form so the same substring check
+    # holds everywhere — ``as_posix()`` is the identity on POSIX paths.
+    assert ".clawcodex/transcripts" in Path(state.output_file).as_posix()
 
 
 def test_register_async_agent_replaces_existing_entry() -> None:

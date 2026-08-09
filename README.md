@@ -75,10 +75,18 @@ ClawCodex keeps your request prefix **byte-stable**, so DeepSeek's prompt cache 
 
 ## ⚡ Quick Install
 
-**One line** — installs `uv`, Python 3.10+, and puts `clawcodex` on your PATH:
+**One line** — installs `uv`, Python 3.10+, and puts `clawcodex` on your PATH.
+
+macOS / Linux / WSL / Git Bash:
 
 ```bash
 curl -fsSL https://clawcodex.app/install.sh | bash
+```
+
+Windows (native PowerShell — no WSL needed):
+
+```powershell
+irm https://clawcodex.app/install.ps1 | iex
 ```
 
 Then configure a provider and start coding:
@@ -88,10 +96,13 @@ clawcodex login   # interactive provider + API key setup → ~/.clawcodex/config
 clawcodex         # start it in any project — Full Access by default, /permissions to change
 ```
 
-The installer also ships `clawcodex` lifecycle helpers — `doctor` (diagnose your
-environment), `verify` (health-check the install), `update`, and `uninstall`. It is
-re-run-safe and works on macOS, Linux, and WSL. To pass flags through the pipe, use
-`curl -fsSL https://clawcodex.app/install.sh | bash -s -- --dry-run`.
+Both installers ship the same `clawcodex` lifecycle helpers — `doctor` (diagnose your
+environment), `verify` (health-check the install), `update`, and `uninstall` — and are
+re-run-safe. To pass flags through the pipe:
+`curl -fsSL https://clawcodex.app/install.sh | bash -s -- --dry-run` on POSIX, or
+`& ([scriptblock]::Create((irm https://clawcodex.app/install.ps1))) -DryRun` on Windows.
+Windows prerequisite: [Git for Windows](https://git-scm.com/download/win) — its Git Bash
+is what the shell tool runs commands with.
 
 <details>
 <summary><b>Or install manually from source</b></summary>
@@ -135,6 +146,7 @@ The `session`, `settings`, and `env` blocks are optional — sensible defaults a
 
 ## 📰 News
 
+- **2026-08-09:** **Native Windows support for the CLI** — ClawCodex now runs first-class on Windows 10/11 (PowerShell / cmd / Windows Terminal, no WSL required), installed with one line: `irm https://clawcodex.app/install.ps1 | iex`. The new `install.ps1` mirrors `install.sh` end to end — uv install, Python provisioning, lock-pinned deps, PATH registration, TUI build, plus the same `doctor` / `verify` / `update` / `uninstall` lifecycle. Under the hood the port is structural, not cosmetic: a shell platform layer resolves **Git Bash** for the Bash tool (explicitly refusing the WSL `System32\bash.exe` shim), so shell commands keep their POSIX semantics everywhere; process-tree kills go through `taskkill /T`; the mailbox/transcript/lockfile gain real `msvcrt` locking (the Windows CRT's `O_APPEND` emulation can silently *lose* concurrent writes); the permission layer folds NTFS case-insensitivity and refuses whole-drive grants and drive-relative escapes (deny-side only); and `@`-mentions, `CLAWCODEX.md` `@includes`, and persistent-`cd` tracking all round-trip real `C:\` paths. The full test suite now runs on `windows-latest` alongside Ubuntu in CI.
 - **2026-08-08 (v1.5.0):** **ClawCodex Desktop — the whole agent in a native app (#802–#808)** — ClawCodex now ships a real desktop application (`ui-desktop/`): streaming chat with a live tool trail and reasoning, permission approvals with once/session/always grants, a session sidebar that lists and resumes the **same durable sessions as the TUI**, side-by-side previews, settings, and the official pixel-art crab as the dock icon and in-app brand mark. `clawcodex desktop` launches it from a checkout (first run installs the UI deps; `--no-dev` builds once and launches Electron directly). The architecture is the interesting part: the app spawns **`clawcodex serve`** — one loopback port serving `/api/*` REST plus a JSON-RPC WebSocket gateway at `/api/ws` — and sessions run on the **same in-process agent core the TUI uses**, so both surfaces share one config, one session store, one skills set, and one permission system; the wire contract is the TUI's own gateway vocabulary, adapted server-side. The port itself is one of the largest single features ClawCodex has landed: ~310K lines of TypeScript across ~1,500 files brought over from the reference desktop implementation, rebranded end to end, with every quality gate held to the reference's own baseline (typecheck green, lint identical, unit-test failure set byte-identical) and the whole loop verified live — boot → real chat turn → streamed reply rendered in the window. macOS packaging works today (`npm run dist:mac` → DMG/zip via electron-builder, hardened-runtime config in place). Ship-week fixes landed the same day: the root `.gitignore`'s Python-oriented `lib/` pattern had silently kept 180 renderer source files out of the initial import — fresh clones failed at boot until #806; the default UI scale moved from the reference's dense 90% preset to Chromium's 100% actual size (#807); and a second `clawcodex desktop` now gets a friendly "already running" message instead of a vite stack trace (#808).
 - **2026-08-02 (v1.4.0):** **Fusion models — give a text-only model vision (#771, #787)** — several strong reasoning models cannot see images at all: `deepseek-v4-pro` rejects an image content block outright (`400 unknown variant \`image_url\``), so pasting a screenshot, `@`-mentioning one, or letting `Read` return one ended the turn. A **fusion model** pairs that base model with a second, vision-capable one — every image is described by the vision model first, and the base model reads the description. `/fusion create <name> <base> <vision>` saves one; it then behaves like a normal model in the `/model` picker, as `--model <name>`, in `-p`, and across restarts. Ported from [claude-code-router](https://ccrdesk.top/en/configuration/fusion-models/)'s Fusion Model concept, with one deliberate difference: CCR is a proxy, so it can only offer vision as a *tool* the model may choose to call — which cannot help a pasted image, already on the wire before the model gets a turn. ClawCodex owns the agent loop, so it substitutes images in place, covering paste, `@file.png`, `Read`, and Bash image output at once. Verified end to end on Terminal-Bench 2.1's `code-from-image` task — transcribing handwritten pseudocode from a PNG and reproducing its output — with `deepseek-v4-flash` + `openai:gpt-5.6-luna` (#787); the base model alone returns a 400 on the same image. **Also in v1.4.0:** GPT-5.6 Sol/Terra/Luna (#773); four more OpenAI-compatible providers — groq, cerebras, baseten, xai — taking the registry to 30 (#784); `/mode` becomes `/permissions` with a three-level picker and Full Access by default (#768); `AskUserQuestion` finally renders a real picker instead of returning JSON to the model (#774); the OpenAI provider now picks its wire protocol from the model rather than the auth mode, which is what makes `gpt-5.6-luna` usable on an API key (#783); cached prompt tokens are billed at the cache rate instead of the full input rate, and OpenRouter's streamed reasoning is no longer discarded (#785, #786); and headless runs stop reporting a cut-short run as a success (#777–#782).
 - **2026-07-29 (v1.3.0):** **ClawCodex scores 80.9% on Terminal-Bench 2.1 — a top-tier open-source result on Opus 5 (#720–#725, #747–#754)** — running headless on `claude-opus-5` at `effort=xhigh`, ClawCodex solved **72 of 89** Terminal-Bench 2.1 tasks: **80.9% pass@1** on a single run. On the [public 2.1 leaderboard](https://www.tbench.ai/leaderboard/terminal-bench/2.1) (k=5 averages) that would slot **around third** — behind Claude Code / Fable 5 (83.8%) and Codex / GPT-5.5 (83.1%), statistically level with the 79–80% cluster, and **ahead of Claude Code on Opus 4.8 (78.9%) and Sonnet 5 (74.6%)**. Getting there was open, unglamorous parity work: a Harbor eval adapter (`eval/harbor/`) for three-way ClawCodex-vs-openclaude-vs-Claude-Code runs (#720, #724, #725), then a run of prompt- and reliability-parity fixes — restored task-tool skip conditions and parallel-tool guidance, deferred nonessential initial tools, and recovery of trials lost to empty turns and transport drops (#747–#754). **Also in v1.3.0:** `claude-opus-5` support with an interactive `/effort` fix (#746), bounded persistent memory with a background self-improvement review (#731), a VS Code extension driving the agent-server over stdio (#727), image-paste input with an `[Image #N]` un-attach chip (#761, #762), the `CLAUDE.md → CLAWCODEX.md` context-file rebrand (#732), and transport-retry hardening (#757, #760). Stated plainly: this is a single k=1 pass (binomial 1σ ±4.2pp) against the board's k=5 ± ~1.2pp averages, benchmarked on `main` at #756 (before the v1.3.0 tag), so read it as directional rather than a ranked submission.
@@ -591,7 +603,7 @@ cd clawcodex
 
 # Create venv (uv recommended)
 uv venv --python 3.11
-source .venv/bin/activate
+source .venv/bin/activate      # Windows PowerShell: .venv\Scripts\Activate.ps1
 
 # Install package + entry point (recommended)
 uv pip install -e ".[dev]"
@@ -599,6 +611,12 @@ uv pip install -e ".[dev]"
 # Alternative: requirements only, then editable install
 # uv pip install -r requirements.txt && uv pip install -e .
 ```
+
+Windows note: the CLI runs natively on Windows 10/11 (PowerShell, cmd, or
+Windows Terminal). Install [Git for Windows](https://git-scm.com/download/win)
+first — the agent's Bash tool executes commands through Git Bash (never the
+WSL `System32\bash.exe`), so shell commands behave the same as on
+macOS/Linux. `CLAWCODEX_GIT_BASH_PATH` overrides the auto-detected bash.
 
 ### Configure
 

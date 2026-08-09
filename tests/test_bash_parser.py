@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import unittest
 
 from src.permissions.bash_parser.ast_nodes import SimpleCommand, Redirect
@@ -268,7 +269,9 @@ class TestExpandHome(unittest.TestCase):
     def test_tilde_expanded(self) -> None:
         result = expand_home("~/Documents")
         self.assertNotIn("~", result)
-        self.assertTrue(result.startswith("/"))
+        # isabs is the platform-neutral version of the old startswith("/")
+        # check (home is C:\Users\... on Windows).
+        self.assertTrue(os.path.isabs(result))
 
     def test_no_tilde(self) -> None:
         self.assertEqual(expand_home("/usr/bin"), "/usr/bin")

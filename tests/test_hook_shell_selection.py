@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 import tempfile
 from pathlib import Path
 
@@ -245,8 +246,22 @@ class _StubProcess:
 
 
 class TestExecutorBashPath:
+    # The bash-path spawn contract is platform-split: POSIX keeps the
+    # historical ``create_subprocess_shell`` (/bin/sh) invocation; Windows
+    # routes through Git Bash via ``create_subprocess_exec`` (cmd.exe would
+    # break every POSIX-flavored hook body). When a Windows machine has no
+    # Git Bash the executor falls back to the shell path — pin whichever
+    # applies to the running machine.
+    @staticmethod
+    def _expected_spawn() -> str:
+        if sys.platform != "win32":
+            return "shell"
+        from src.utils.shell_platform import find_bash
+
+        return "exec" if find_bash() is not None else "shell"
+
     @pytest.mark.asyncio
-    async def test_default_uses_subprocess_shell(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_default_uses_platform_bash_spawn(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: dict[str, object] = {}
 
         async def fake_shell(cmd, *, stdin, stdout, stderr, env):
@@ -254,9 +269,11 @@ class TestExecutorBashPath:
             captured["cmd"] = cmd
             return _StubProcess(stdout=b"ok\n", returncode=0)
 
-        async def fake_exec(*_args, **_kwargs):  # pragma: no cover - shouldn't be called
+        async def fake_exec(*args, **_kwargs):
             captured["used"] = "exec"
-            return _StubProcess()
+            # argv shape: (bash, "-c", command)
+            captured["cmd"] = args[-1]
+            return _StubProcess(stdout=b"ok\n", returncode=0)
 
         monkeypatch.setattr(asyncio, "create_subprocess_shell", fake_shell)
         monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
@@ -264,28 +281,28 @@ class TestExecutorBashPath:
         hook = HookConfig(type="command", command="echo ok")  # shell=None
         result = await _execute_command_hook(hook, {"hook_event": "PreToolUse"})
 
-        assert captured["used"] == "shell"
+        assert captured["used"] == self._expected_spawn()
         assert captured["cmd"] == "echo ok"
         assert result.exit_code == 0
 
     @pytest.mark.asyncio
-    async def test_explicit_bash_uses_subprocess_shell(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_explicit_bash_uses_platform_bash_spawn(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: dict[str, object] = {}
 
         async def fake_shell(cmd, *, stdin, stdout, stderr, env):
             captured["used"] = "shell"
             return _StubProcess(returncode=0)
 
-        async def fake_exec(*_args, **_kwargs):  # pragma: no cover
+        async def fake_exec(*_args, **_kwargs):
             captured["used"] = "exec"
-            return _StubProcess()
+            return _StubProcess(returncode=0)
 
         monkeypatch.setattr(asyncio, "create_subprocess_shell", fake_shell)
         monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
 
         hook = HookConfig(type="command", command="echo ok", shell="bash")
         await _execute_command_hook(hook, {"hook_event": "PreToolUse"})
-        assert captured["used"] == "shell"
+        assert captured["used"] == self._expected_spawn()
 
 
 # ---------------------------------------------------------------------------

@@ -55,7 +55,10 @@ class TestPipelineConfigBuilder(unittest.TestCase):
         self.assertIsInstance(cfg, PipelineConfig)
         self.assertIs(cfg.provider, provider)
         self.assertEqual(cfg.model, "m1")
-        self.assertEqual(cfg.read_file_state, {"/tmp/a.py": {"timestamp": 123.0}})
+        # Keys are str(Path(...)) — native separators on Windows — so
+        # build the expected key the same way the builder does.
+        expected_key = str(Path("/tmp/a.py"))
+        self.assertEqual(cfg.read_file_state, {expected_key: {"timestamp": 123.0}})
         self.assertIs(cfg.autocompact_tracking, tracking)
 
     def test_empty_fingerprints_yield_none_state(self):

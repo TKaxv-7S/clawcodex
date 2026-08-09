@@ -51,17 +51,24 @@ _PROFILING_ENABLED: bool = False
 # from clobbering each other.
 _SESSION_ID: str = uuid.uuid4().hex[:12]
 
-# Output directory. Lazy-created on first write; never read at import time.
-# Honors ``CLAWCODEX_CONFIG_DIR`` (matches the codebase's existing config-dir
-# resolution at ``src/memdir/paths.py:108`` ``get_claude_config_home_dir``).
-def _resolve_output_dir() -> Path:
+# Output directory. Resolved at import (tests patch the module attribute as
+# the write-target seam), but with a ``None`` fallback instead of a crash:
+# ``Path.home()`` raises on Windows when the environment lacks
+# ``USERPROFILE`` (env-clearing tests, stripped service environments), and a
+# profiler must never break module import. Honors ``CLAWCODEX_CONFIG_DIR``
+# (matches the codebase's existing config-dir resolution at
+# ``src/memdir/paths.py:108`` ``get_claude_config_home_dir``).
+def _resolve_output_dir() -> Path | None:
     override = os.environ.get("CLAWCODEX_CONFIG_DIR")
     if override:
         return Path(override).expanduser() / "startup-perf"
-    return Path.home() / ".clawcodex" / "startup-perf"
+    try:
+        return Path.home() / ".clawcodex" / "startup-perf"
+    except RuntimeError:
+        return None
 
 
-_OUTPUT_DIR = _resolve_output_dir()
+_OUTPUT_DIR: Path | None = _resolve_output_dir()
 
 
 def _read_env_gate() -> bool:
@@ -158,7 +165,7 @@ def _flush_on_exit() -> None:
     Best-effort: any exception is swallowed — we never want profiling
     instrumentation to break a process exit path.
     """
-    if not _PROFILING_ENABLED or not _phase_log:
+    if not _PROFILING_ENABLED or not _phase_log or _OUTPUT_DIR is None:
         return
     try:
         _OUTPUT_DIR.mkdir(parents=True, exist_ok=True)

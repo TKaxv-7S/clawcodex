@@ -8,6 +8,7 @@ author's intent ({Edit,Write}), gated behind the settings.autoFix opt-in.
 from __future__ import annotations
 
 import asyncio
+import tempfile
 from types import SimpleNamespace
 
 import pytest
@@ -20,6 +21,10 @@ from src.services.autofix.hook import (
     should_run_auto_fix,
 )
 from src.services.autofix.runner import AutoFixResult, run_auto_fix_check
+
+# A cwd that exists on every platform ("/tmp" is not a directory on Windows;
+# on Linux gettempdir() IS /tmp, so behavior there is unchanged).
+_TMP = tempfile.gettempdir()
 
 
 def _run(coro):
@@ -92,30 +97,33 @@ class TestHook:
 
 class TestRunner:
     def test_lint_fail_skips_test(self):
-        r = _run(run_auto_fix_check(lint="exit 1", test="echo NO", timeout_ms=5000, cwd="/tmp"))
+        r = _run(run_auto_fix_check(lint="exit 1", test="echo NO", timeout_ms=5000, cwd=_TMP))
         assert r.has_errors and r.lint_exit_code == 1 and r.test_exit_code is None
         assert "Lint errors (exit code 1)" in r.error_summary
 
     def test_lint_pass_test_fail(self):
-        r = _run(run_auto_fix_check(lint="true", test="exit 2", timeout_ms=5000, cwd="/tmp"))
+        r = _run(run_auto_fix_check(lint="true", test="exit 2", timeout_ms=5000, cwd=_TMP))
         assert r.has_errors and r.test_exit_code == 2 and "Test failures (exit code 2)" in r.error_summary
 
     def test_both_clean(self):
-        r = _run(run_auto_fix_check(lint="true", test="true", timeout_ms=5000, cwd="/tmp"))
+        r = _run(run_auto_fix_check(lint="true", test="true", timeout_ms=5000, cwd=_TMP))
         assert not r.has_errors
 
     def test_timeout_kills_group(self):
         import time
 
         t0 = time.time()
-        r = _run(run_auto_fix_check(lint="sleep 30", test=None, timeout_ms=800, cwd="/tmp"))
+        r = _run(run_auto_fix_check(lint="sleep 30", test=None, timeout_ms=800, cwd=_TMP))
         assert r.timed_out and r.has_errors and (time.time() - t0) < 5
         assert "Command timed out." in r.error_summary
 
     def test_output_capped_at_10k(self):
+        # 50k generator that works in POSIX sh (the Linux spawn path) AND Git
+        # Bash (the Windows spawn path) — ``python3`` doesn't exist on Windows
+        # and brace expansion doesn't exist in dash.
         r = _run(run_auto_fix_check(
-            lint='python3 -c "print(chr(120)*50000)"; exit 1', test=None,
-            timeout_ms=5000, cwd="/tmp",
+            lint="head -c 50000 /dev/zero | tr '\\0' 'x'; echo; exit 1", test=None,
+            timeout_ms=5000, cwd=_TMP,
         ))
         assert r.has_errors and len(r.lint_output) <= 10002  # 10k + the "\n" join strip slack
 
@@ -123,7 +131,7 @@ class TestRunner:
         class _Sig:
             aborted = True
 
-        r = _run(run_auto_fix_check(lint="exit 1", test=None, timeout_ms=5000, cwd="/tmp", abort_signal=_Sig()))
+        r = _run(run_auto_fix_check(lint="exit 1", test=None, timeout_ms=5000, cwd=_TMP, abort_signal=_Sig()))
         assert not r.has_errors
 
     def test_mid_flight_abort_no_errors(self):
@@ -136,7 +144,7 @@ class TestRunner:
 
         async def go():
             task = asyncio.ensure_future(run_auto_fix_check(
-                lint="sleep 30", test=None, timeout_ms=60000, cwd="/tmp", abort_signal=sig,
+                lint="sleep 30", test=None, timeout_ms=60000, cwd=_TMP, abort_signal=sig,
             ))
             await asyncio.sleep(0.2)
             sig.aborted = True
@@ -147,7 +155,7 @@ class TestRunner:
         assert not r.has_errors and not r.timed_out and (time.time() - t0) < 5
 
     def test_no_commands_no_errors(self):
-        assert not _run(run_auto_fix_check(lint=None, test=None, timeout_ms=5000, cwd="/tmp")).has_errors
+        assert not _run(run_auto_fix_check(lint=None, test=None, timeout_ms=5000, cwd=_TMP)).has_errors
 
 
 class TestStep:
@@ -158,7 +166,7 @@ class TestStep:
         return SimpleNamespace(
             query_tracking=SimpleNamespace(chain_id=chain),
             abort_controller=None,
-            cwd="/tmp",
+            cwd=_TMP,
         )
 
     def _collect(self, ctx, tool="Edit", tool_use_id="tu"):
@@ -220,7 +228,7 @@ class TestStep:
 
         stepmod._auto_fix_retry_count.clear()
         self._patch_config(monkeypatch, AutoFixConfig(enabled=True, lint="exit 1", max_retries=3))
-        ctx = SimpleNamespace(query_tracking=None, abort_controller=None, cwd="/tmp")
+        ctx = SimpleNamespace(query_tracking=None, abort_controller=None, cwd=_TMP)
         out = self._collect(ctx)
         assert len(out) == 1 and "default" in stepmod._auto_fix_retry_count
 

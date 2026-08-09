@@ -191,7 +191,12 @@ class TestWriteCommandRuleGate(_Base):
 
     def test_rm_rule_blocked_outside_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as other:
-            decision = self.decide(f"rm -rf {other}/x", allow=["rm:*"])
+            # as_posix(): identical string on POSIX; on Windows a raw C:\...
+            # spelling would be backslash-escape-mangled by the (POSIX) shell
+            # tokenizer before the gate ever saw a real out-of-roots path.
+            decision = self.decide(
+                f"rm -rf {Path(other).as_posix()}/x", allow=["rm:*"]
+            )
             self.assertEqual(decision.behavior, "ask")
 
     def test_rm_rule_allowed_inside_workspace(self) -> None:
@@ -202,8 +207,9 @@ class TestWriteCommandRuleGate(_Base):
 
     def test_mv_rule_blocked_on_exfil_target(self) -> None:
         with tempfile.TemporaryDirectory() as other:
+            # as_posix(): see test_rm_rule_blocked_outside_workspace.
             decision = self.decide(
-                f"mv secret.txt {other}/exfil", allow=["mv:*"]
+                f"mv secret.txt {Path(other).as_posix()}/exfil", allow=["mv:*"]
             )
             self.assertEqual(decision.behavior, "ask")
 

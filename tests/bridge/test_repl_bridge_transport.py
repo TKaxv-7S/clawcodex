@@ -134,8 +134,16 @@ async def test_v1_adapter_connect_schedules_task_without_blocking() -> None:
     v1 = create_v1_repl_transport(hybrid)
     # connect() must return immediately even with a doomed target.
     v1.connect()
-    # Give the scheduled task a tick to run (and fail).
-    await asyncio.sleep(0.1)
+    # Give the scheduled task time to run (and fail). One tick suffices on
+    # POSIX, where the refused connect fails in microseconds; Windows'
+    # loopback stack retransmits the SYN after the RST, so the very same
+    # failure takes ~2 s there — poll with a deadline instead of assuming
+    # a single sleep is enough. The transport starts 'idle' (not
+    # 'closed'), so this cannot break out before the attempt resolves.
+    for _ in range(100):
+        if hybrid.is_closed_status():
+            break
+        await asyncio.sleep(0.1)
     # Transport ends up in 'closed' state because auto_reconnect=False.
     assert hybrid.is_closed_status()
     v1.close()

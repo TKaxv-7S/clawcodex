@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -17,7 +18,10 @@ def test_credentials_are_private_and_round_trip(tmp_path: Path, monkeypatch) -> 
     saved = _credentials()
     auth.save_credentials(saved)
     assert auth.load_credentials() == saved
-    assert auth.credentials_path().stat().st_mode & 0o777 == 0o600
+    if sys.platform != "win32":
+        # POSIX permission bits don't exist on Windows (chmod only
+        # toggles the read-only flag), so the 0o600 check is POSIX-only.
+        assert auth.credentials_path().stat().st_mode & 0o777 == 0o600
 
 
 def test_refresh_rotates_and_persists_tokens(tmp_path: Path, monkeypatch) -> None:

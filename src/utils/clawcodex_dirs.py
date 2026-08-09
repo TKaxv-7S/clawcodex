@@ -11,7 +11,8 @@ finding that first split ``permissions/settings_paths.py``).
 Roots:
   * User:    ``$CLAWCODEX_CONFIG_DIR`` or ``~/.clawcodex``
   * Project: ``<dir>/.clawcodex`` (walked per-subsystem)
-  * Managed: ``$CLAWCODEX_MANAGED_CONFIG_DIR`` or ``/etc/clawcodex``
+  * Managed: ``$CLAWCODEX_MANAGED_CONFIG_DIR``, else ``/etc/clawcodex``
+    (POSIX) / ``%ProgramData%\\ClawCodex`` (Windows)
 
 The legacy ``~/.claude`` locations are consulted exactly once, by
 ``src/utils/legacy_migration.py``, as a copy-only migration SOURCE.
@@ -24,6 +25,7 @@ depend on it without cycles.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 #: Env override for the user config dir. Deliberately NOT
@@ -38,8 +40,15 @@ MANAGED_CONFIG_DIR_ENV = "CLAWCODEX_MANAGED_CONFIG_DIR"
 #: Name of the per-project config directory.
 PROJECT_DIR_NAME = ".clawcodex"
 
-#: Default managed/policy dir (enterprise deployments).
-DEFAULT_MANAGED_CONFIG_DIR = "/etc/clawcodex"
+#: Default managed/policy dir (enterprise deployments). Windows uses
+#: ``%ProgramData%\ClawCodex`` — the same root ``settings/managed_path.py``
+#: resolves managed-settings from, so the two admin-policy surfaces agree.
+if sys.platform == "win32":
+    DEFAULT_MANAGED_CONFIG_DIR = os.path.join(
+        os.environ.get("ProgramData", r"C:\ProgramData"), "ClawCodex"
+    )
+else:
+    DEFAULT_MANAGED_CONFIG_DIR = "/etc/clawcodex"
 
 #: Legacy locations — migration SOURCE only. Never read at runtime.
 LEGACY_USER_DIR_NAME = ".claude"
@@ -60,7 +69,8 @@ def get_user_config_dir() -> Path:
 
 
 def get_managed_config_dir() -> Path:
-    """Managed/policy dir: ``$CLAWCODEX_MANAGED_CONFIG_DIR`` or ``/etc/clawcodex``."""
+    """Managed/policy dir: ``$CLAWCODEX_MANAGED_CONFIG_DIR`` or the platform
+    default (``/etc/clawcodex``; ``%ProgramData%\\ClawCodex`` on Windows)."""
     override = os.environ.get(MANAGED_CONFIG_DIR_ENV)
     if override:
         return Path(override).expanduser()

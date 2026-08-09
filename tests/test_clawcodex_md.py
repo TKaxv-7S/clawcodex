@@ -48,7 +48,9 @@ class TestExtractIncludePaths(unittest.TestCase):
     def test_simple_include(self):
         paths = _extract_include_paths("@./config.md", "/project")
         self.assertEqual(len(paths), 1)
-        self.assertIn("/project/config.md", paths)
+        # str(Path(...)) renders the expectation with the platform's
+        # native separator, matching what the resolver returns.
+        self.assertIn(str(Path("/project/config.md")), paths)
 
     def test_home_include(self):
         paths = _extract_include_paths("@~/notes.md", "/project")
@@ -63,8 +65,8 @@ class TestExtractIncludePaths(unittest.TestCase):
     def test_skip_code_blocks(self):
         text = "```\n@./should-not-include.md\n```\n@./should-include.md"
         paths = _extract_include_paths(text, "/project")
-        self.assertNotIn("/project/should-not-include.md", paths)
-        self.assertIn("/project/should-include.md", paths)
+        self.assertNotIn(str(Path("/project/should-not-include.md")), paths)
+        self.assertIn(str(Path("/project/should-include.md")), paths)
 
     def test_multiple_includes(self):
         text = "@./a.md\n@./b.md\n@./c.md"
@@ -73,12 +75,15 @@ class TestExtractIncludePaths(unittest.TestCase):
 
     def test_fragment_stripped(self):
         paths = _extract_include_paths("@./doc.md#section", "/project")
-        self.assertIn("/project/doc.md", paths)
+        self.assertIn(str(Path("/project/doc.md")), paths)
 
 
 class TestResolveIncludePath(unittest.TestCase):
     def test_relative_dot(self):
-        self.assertEqual(_resolve_include_path("./file.md", "/base"), "/base/file.md")
+        self.assertEqual(
+            _resolve_include_path("./file.md", "/base"),
+            str(Path("/base/file.md")),
+        )
 
     def test_absolute(self):
         self.assertEqual(_resolve_include_path("/etc/conf.md", "/base"), "/etc/conf.md")
@@ -89,7 +94,7 @@ class TestResolveIncludePath(unittest.TestCase):
 
     def test_bare_relative(self):
         result = _resolve_include_path("file.md", "/base")
-        self.assertEqual(result, "/base/file.md")
+        self.assertEqual(result, str(Path("/base/file.md")))
 
 
 class TestParseFrontmatterPaths(unittest.TestCase):

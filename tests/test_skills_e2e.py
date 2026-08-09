@@ -152,7 +152,10 @@ def test_commit_helper_renders_all_substitutions(
     assert "in `feat` scope" in prompt
 
     # (c) ${CLAUDE_SKILL_DIR} resolved to the skill's actual abs path.
-    assert f"Skill base: {expected_dir_str}" in prompt
+    # The substitution engine deliberately emits forward slashes on every
+    # platform (runtime_substitution flips ``\`` → ``/`` so the value is
+    # safe inside bash commands) — identical to str() on POSIX.
+    assert f"Skill base: {skill_dir.resolve().as_posix()}" in prompt
     assert "${CLAUDE_SKILL_DIR}" not in prompt
 
     # (d) ${CLAUDE_SESSION_ID} resolved.

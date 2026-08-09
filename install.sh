@@ -1090,8 +1090,9 @@ EXIT CODES
 NOTES
     - Re-running this script is safe: existing repos are fast-forwarded,
       existing venvs are reused, the command wrapper is regenerated.
-    - On Windows, run from Git Bash or WSL (native cmd.exe / PowerShell are
-      detected and rejected with instructions).
+    - On Windows, prefer the native installer from PowerShell:
+      irm https://clawcodex.app/install.ps1 | iex — or run this script from
+      Git Bash / WSL (native cmd.exe / PowerShell are detected and redirected).
     - In non-TTY mode (piped / agent / CI), every emitted line is prefixed
       with '[install.sh]', and a grep-friendly status line is emitted on exit.
 EOF
@@ -1218,6 +1219,7 @@ CLAWCODEX_PARENT_DIR="$(dirname -- "$CLAWCODEX_HOME")"
 OS=$(detect_os)
 
 # Bail out for native Windows shells — this script targets bash, not cmd/PS.
+# Native Windows has its own installer now (install.ps1); point there first.
 if [[ "$OS" == "unknown" ]] && [[ -n "${COMSPEC:-}" || -n "${WINDIR:-}" ]]; then
     cat >&2 <<END_MSG
 ✗ Native Windows shell detected (cmd.exe or PowerShell).
@@ -1225,26 +1227,23 @@ if [[ "$OS" == "unknown" ]] && [[ -n "${COMSPEC:-}" || -n "${WINDIR:-}" ]]; then
   install.sh is a bash script and cannot run directly in cmd or PowerShell.
   Please use one of the following options:
 
-  Option A — Git Bash (recommended, zero-config):
+  Option A — Native Windows installer (recommended):
+    In PowerShell, run:
+        irm https://clawcodex.app/install.ps1 | iex
+    (Same lifecycle subcommands: status / doctor / verify / update / uninstall.)
+
+  Option B — Git Bash:
     1. Install Git for Windows from https://git-scm.com/download/win
     2. Open "Git Bash" from the Start menu
     3. In Git Bash, run:    bash install.sh
 
-  Option B — WSL2 (full Linux environment):
+  Option C — WSL2 (full Linux environment):
     1. Open PowerShell as Administrator and run:
          wsl --install -d Ubuntu
     2. Restart your computer
     3. Open the Ubuntu terminal and run:
          sudo apt update && sudo apt install -y git curl
          bash install.sh
-
-  Option C — Install manually from source:
-    1. Install Git, Python 3.10+, and curl
-    2. Run:
-         git clone ${REPO_URL} /tmp/clawcodex
-         cd /tmp/clawcodex
-         pip install -e .
-    (See ${REPO_URL} for details)
 
 END_MSG
     exit 1

@@ -6,9 +6,7 @@ import json
 import os as _os_mod
 import re
 import shlex
-import signal as _signal_mod
 import subprocess
-import sys as _sys_mod
 import time as _time_mod
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,18 +43,15 @@ def _get_abort_signal(context: ToolContext) -> Any:
     return context.abort_controller.signal
 
 
-def _kill_process_group(pid: int, sig: int) -> None:
-    try:
-        if _sys_mod.platform == "win32":
-            # No setpgid on Windows; just kill the process itself.
-            _os_mod.kill(pid, sig)
-        else:
-            _os_mod.killpg(_os_mod.getpgid(pid), sig)
-    except (ProcessLookupError, PermissionError, OSError):
-        # Already gone (race vs. natural exit) or insufficient
-        # privileges — fall through to subprocess.wait() which will
-        # surface the right state.
-        pass
+from src.utils.shell_platform import (
+    BashNotFoundError,
+    bash_argv,
+    bash_env,
+    kill_process_tree,
+    popen_tree_kwargs,
+    pwd_command,
+    to_shell_path,
+)
 
 
 def _run_bash_with_abort(
@@ -87,20 +82,16 @@ def _run_bash_with_abort(
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
         "text": True,
+        **popen_tree_kwargs(),
     }
-    if _sys_mod.platform == "win32":
-        popen_kwargs["creationflags"] = getattr(
-            subprocess, "CREATE_NEW_PROCESS_GROUP", 0
-        )
-    else:
-        popen_kwargs["start_new_session"] = True
 
     if "env" not in popen_kwargs:
         # Scrub secret env vars when CLAUDE_CODE_SUBPROCESS_ENV_SCRUB is set
         # (anti-exfiltration; parity with TS subprocessEnv at the Bash site).
+        # bash_env layers the MSYS knobs Git Bash needs on Windows.
         from src.utils.subprocess_env import subprocess_env
 
-        popen_kwargs["env"] = subprocess_env()
+        popen_kwargs["env"] = bash_env(subprocess_env())
 
     proc = subprocess.Popen(argv, **popen_kwargs)
 
@@ -130,7 +121,7 @@ def _run_bash_with_abort(
     # discriminator for downstream callers; the exit-code label is
     # rewritten in ``_bash_call``.
     if interrupted or timed_out:
-        _kill_process_group(proc.pid, _signal_mod.SIGKILL)
+        kill_process_tree(proc.pid, force=True)
         try:
             proc.wait(timeout=_KILL_REAP_TIMEOUT_S)
         except subprocess.TimeoutExpired:
@@ -231,16 +222,26 @@ def _try_extract_cd(command: str) -> Path | None:
     Compound commands must run in the shell.  Treating
     ``cd /work && make`` as a pure directory change silently discards
     everything after the path.
+
+    On Windows the POSIX lexer would eat path backslashes (``cd C:\\proj``
+    → ``C:proj``), so backslashes are swapped for a NUL sentinel before
+    splitting and restored after — NUL can't occur in the command (rejected
+    at ``_bash_call`` entry), and the POSIX lexer still provides the
+    quoting/compound detection this fast path relies on.
     """
     stripped = command.strip()
     if not stripped.startswith("cd "):
         return None
+    sentinel = "\x00"
+    lex_input = (
+        stripped.replace("\\", sentinel) if _os_mod.name == "nt" else stripped
+    )
     try:
-        parts = shlex.split(stripped, posix=True)
+        parts = shlex.split(lex_input, posix=True)
     except ValueError:
         return None
     if len(parts) == 2 and parts[0] == "cd":
-        return Path(parts[1])
+        return Path(parts[1].replace(sentinel, "\\"))
     return None
 
 
@@ -604,7 +605,9 @@ def _bash_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
 
     explicit_cwd = tool_input.get("cwd")
     if explicit_cwd is not None:
-        if not isinstance(explicit_cwd, str) or not explicit_cwd.startswith("/"):
+        # ``Path.is_absolute`` instead of ``startswith("/")`` so Windows
+        # drive-letter paths (``C:\proj``) qualify too.
+        if not isinstance(explicit_cwd, str) or not Path(explicit_cwd).is_absolute():
             raise ToolInputError("cwd must be an absolute path when provided")
         cwd = context.ensure_allowed_path(explicit_cwd)
     else:
@@ -617,12 +620,19 @@ def _bash_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
     # behaviour: we return immediately with a task id and let the model poll
     # the output via ``TaskOutput``.
     if tool_input.get("run_in_background"):
-        bg_output = spawn_background_bash(
-            command=command,
-            cwd=cwd,
-            description=tool_input.get("description"),
-            context=context,
-        )
+        try:
+            bg_output = spawn_background_bash(
+                command=command,
+                cwd=cwd,
+                description=tool_input.get("description"),
+                context=context,
+            )
+        except BashNotFoundError as exc:
+            return ToolResult(
+                name=BASH_TOOL_NAME,
+                output={"error": str(exc)},
+                is_error=True,
+            )
         return ToolResult(name=BASH_TOOL_NAME, output=bg_output)
 
     cd_target = _try_extract_cd(command)
@@ -677,16 +687,34 @@ def _bash_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
     cwd_fd, cwd_path = _tempfile.mkstemp(prefix="clawcodex-bash-cwd-", suffix=".txt")
     _os.close(cwd_fd)
     try:
-        wrapped = f"{{ {command}\n}}; __rc=$?; pwd > {shlex.quote(cwd_path)} 2>/dev/null; exit $__rc"
+        # ``pwd_command()`` is ``pwd -W`` under Git Bash so the tracked cwd
+        # comes back as a Windows path Python can resolve; ``to_shell_path``
+        # renders the tempfile target with forward slashes for the same
+        # reason (backslashes are escapes to bash).
+        wrapped = (
+            f"{{ {command}\n}}; __rc=$?; "
+            f"{pwd_command()} > {shlex.quote(to_shell_path(cwd_path))} 2>/dev/null; "
+            f"exit $__rc"
+        )
         # Spawn bash in its own session/process group so we can kill the
         # whole subtree (e.g. ``find /`` that itself forks helpers) when
         # ESC fires. Mirrors TS ``ShellCommand`` (typescript/src/utils/
         # ShellCommand.ts:187-192,345) which uses ``tree-kill`` for the
         # same reason. ``start_new_session=True`` is ``setsid()`` on
         # POSIX; on Windows it falls back to a process group via
-        # ``CREATE_NEW_PROCESS_GROUP``.
+        # ``CREATE_NEW_PROCESS_GROUP``. ``bash_argv`` resolves Git Bash on
+        # Windows (never the WSL System32 shim) and raises a
+        # ``BashNotFoundError`` with an install hint when absent.
+        try:
+            argv = bash_argv(wrapped)
+        except BashNotFoundError as exc:
+            return ToolResult(
+                name=BASH_TOOL_NAME,
+                output={"error": str(exc)},
+                is_error=True,
+            )
         run_result = _run_bash_with_abort(
-            ["bash", "-lc", wrapped],
+            argv,
             cwd=str(cwd),
             timeout_s=timeout_s,
             abort_signal=_get_abort_signal(context),

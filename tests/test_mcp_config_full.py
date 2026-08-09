@@ -205,7 +205,10 @@ class TestUserScopeConfigWrites:
         data = json.loads(cfg.read_text())
         assert data["providers"]["a"]["api_key"] == "sk-keep-me"
         assert data["mcpServers"]["srv"] == {"command": "echo"}
-        assert (os.stat(cfg).st_mode & 0o777) == 0o600
+        if sys.platform != "win32":
+            # POSIX permission bits don't exist on Windows (chmod only
+            # toggles the read-only flag), so the 0600 check is POSIX-only.
+            assert (os.stat(cfg).st_mode & 0o777) == 0o600
 
     def test_add_raises_on_unreadable_config_without_rewriting(self, monkeypatch, tmp_path):
         from src.services.mcp.config import add_mcp_config
@@ -213,13 +216,17 @@ class TestUserScopeConfigWrites:
         home = self._user_home(monkeypatch, tmp_path)
         home.mkdir(parents=True)
         cfg = home / "config.json"
-        cfg.write_text("{not json — a hand-edit typo")
-        before = cfg.read_text()
+        # Pin utf-8: without it, Windows' locale default (cp1252) encodes
+        # the em-dash as 0x97 and the loader's utf-8 read dies with a
+        # UnicodeDecodeError before json.loads can raise "cannot be read".
+        # On POSIX write_text already defaults to utf-8 — byte-identical.
+        cfg.write_text("{not json — a hand-edit typo", encoding="utf-8")
+        before = cfg.read_text(encoding="utf-8")
 
         with pytest.raises(ValueError, match="cannot be read"):
             add_mcp_config("srv", {"command": "echo"}, scope="user")
         # The corrupt file was NOT replaced with a servers-only skeleton.
-        assert cfg.read_text() == before
+        assert cfg.read_text(encoding="utf-8") == before
 
     def test_remove_roundtrip(self, monkeypatch, tmp_path):
         from src.services.mcp.config import add_mcp_config, remove_mcp_config

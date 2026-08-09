@@ -111,7 +111,18 @@ def _should_disable_context_mds() -> bool:
 # @include directive extraction
 # ---------------------------------------------------------------------------
 
+# An @include path is a run of non-whitespace characters; "\ "
+# (backslash-space) escapes an embedded space. On POSIX every other
+# backslash is reserved as an escape lead-in, so bare backslashes stay
+# excluded from the path run.
 _INCLUDE_RE = re.compile(r"(?:^|\s)@((?:[^\s\\]|\\ )+)")
+if os.name == "nt":
+    # Windows: backslash is the path SEPARATOR (`@C:\proj\notes.md`), so
+    # a backslash followed by non-whitespace must count as a plain path
+    # character — otherwise no Windows absolute path could ever be
+    # @included. Alternation order keeps "\ " meaning an escaped space,
+    # exactly as on POSIX.
+    _INCLUDE_RE = re.compile(r"(?:^|\s)@((?:[^\s\\]|\\ |\\(?=\S))+)")
 
 # Simple code fence detection (``` lines)
 _CODE_FENCE_RE = re.compile(r"^`{3,}")
@@ -161,6 +172,12 @@ def _resolve_include_path(path_str: str, base_dir: str) -> str | None:
     if path_str.startswith("./"):
         return str(Path(base_dir) / path_str[2:])
     if path_str.startswith("/") and path_str != "/":
+        return path_str
+    # Windows absolute forms — drive-letter (`C:\...`, `C:/...`) and UNC
+    # (`\\server\share`); ntpath.isabs recognizes both. Guarded on
+    # os.name so POSIX keeps treating something like `C:odd` as a bare
+    # relative name (the branch below).
+    if os.name == "nt" and os.path.isabs(path_str):
         return path_str
     # Bare relative path (no prefix) — treat as relative
     if path_str and re.match(r"^[a-zA-Z0-9._-]", path_str):
@@ -564,6 +581,11 @@ def get_large_memory_files(files: list[MemoryFileInfo]) -> list[MemoryFileInfo]:
 
 def is_memory_file_path(file_path: str) -> bool:
     """Check if a path looks like a memory file."""
+    # Windows accepts BOTH separators; fold os.altsep ("/" on nt) into
+    # os.sep so the rules-dir substring check below matches either
+    # spelling. On POSIX os.altsep is None and the path is untouched.
+    if os.altsep:
+        file_path = file_path.replace(os.altsep, os.sep)
     name = os.path.basename(file_path)
     if name in (CONTEXT_MD, CONTEXT_LOCAL_MD):
         return True

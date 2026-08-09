@@ -213,8 +213,15 @@ class TestClipboardRead(unittest.TestCase):
         self.addCleanup(lambda: first.parent.rmdir())
         self.addCleanup(lambda: second.parent.rmdir())
         self.assertNotEqual(first.parent, second.parent)
-        mode = stat.S_IMODE(first.parent.stat().st_mode)
-        self.assertEqual(mode, 0o700, f"temp dir must be private, got {oct(mode)}")
+        if sys.platform != "win32":
+            # POSIX mode bits are the "private" contract (mkdtemp's
+            # 0700). Windows has no mode bits — ``stat`` synthesizes
+            # 0o777 for every directory — and privacy there rides on
+            # the per-user %TEMP% ACL instead, so the assertion carries
+            # no signal. Unpredictability + quote-freedom above/below
+            # still hold on every platform.
+            mode = stat.S_IMODE(first.parent.stat().st_mode)
+            self.assertEqual(mode, 0o700, f"temp dir must be private, got {oct(mode)}")
         self.assertNotIn("'", str(first))
         self.assertNotIn('"', str(first))
 
@@ -309,7 +316,16 @@ class TestFileUriDecoding(unittest.TestCase):
         self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
         p = d / "shot with spaces.png"
         p.write_bytes(_png())
-        uri = "file://" + str(p).replace(" ", "%20")
+        if sys.platform == "win32":
+            # ``"file://" + "C:\\…"`` would land the drive letter in the
+            # URI *authority* slot — a UNC host, which as_image_file_path
+            # rightly declines. What Windows actually produces (Explorer
+            # drags, browsers) is ``file:///C:/…``; ``Path.as_uri()``
+            # builds exactly that, percent-encoding the spaces the same
+            # way the hand-rolled POSIX form below does.
+            uri = p.as_uri()
+        else:
+            uri = "file://" + str(p).replace(" ", "%20")
         got = ip.try_read_image_from_path(uri)
         self.assertIsNotNone(got)
         self.assertEqual(got.source_path, str(p))

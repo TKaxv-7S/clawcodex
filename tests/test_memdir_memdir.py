@@ -193,7 +193,9 @@ class TestSearchingPastContextSection:
         joined = "\n".join(lines)
         assert lines[0] == "## Searching past context"
         assert 'Grep with pattern="<search term>" path="/tmp/memdir-x" glob="*.md"' in joined
-        assert '/sessions/" glob="*.json"' in joined  # the port's transcript store
+        # The sessions dir is a real native path on the host; normalize
+        # separators so the check works on Windows too (no-op on Linux).
+        assert '/sessions/" glob="*.json"' in joined.replace("\\", "/")  # the port's transcript store
         assert "narrow search terms" in joined
         assert "last resort" in joined
 

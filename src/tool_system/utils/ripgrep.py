@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import platform
 import shutil
-import signal as _signal_mod
 import subprocess
 import sys
 import threading as _threading
@@ -13,6 +12,7 @@ import time as _time_mod
 from typing import Any
 
 from src.utils.abort_controller import AbortSignal
+from src.utils.shell_platform import kill_process_tree, popen_tree_kwargs
 
 
 # Poll interval for the abort/timeout watcher. 50 ms keeps ESC perceptibly
@@ -90,19 +90,6 @@ def _get_install_hint() -> str:
     return "Linux: use your distro package manager, e.g. `apt install ripgrep`."
 
 
-def _kill_process_group(pid: int, sig: int) -> None:
-    try:
-        if sys.platform == "win32":
-            os.kill(pid, sig)
-        else:
-            os.killpg(os.getpgid(pid), sig)
-    except (ProcessLookupError, PermissionError, OSError):
-        # Already gone (race vs. natural exit) or insufficient privileges
-        # — fall through to ``proc.wait()`` which will surface the right
-        # state.
-        pass
-
-
 def _run_rg_with_abort(
     argv: list[str],
     *,
@@ -130,13 +117,8 @@ def _run_rg_with_abort(
         # drain dies, the pipe refills, the child stalls to timeout) —
         # rg emits matched content in the file's original bytes.
         "errors": "replace",
+        **popen_tree_kwargs(),
     }
-    if sys.platform == "win32":
-        popen_kwargs["creationflags"] = getattr(
-            subprocess, "CREATE_NEW_PROCESS_GROUP", 0
-        )
-    else:
-        popen_kwargs["start_new_session"] = True
 
     proc = subprocess.Popen(argv, **popen_kwargs)
 
@@ -177,11 +159,14 @@ def _run_rg_with_abort(
         _time_mod.sleep(_ABORT_POLL_INTERVAL_S)
 
     if aborted or timed_out:
-        _kill_process_group(proc.pid, _signal_mod.SIGTERM)
+        # SIGTERM → grace → SIGKILL on POSIX; on Windows both steps are the
+        # same forced ``taskkill /T`` (no graceful console kill exists), so
+        # the ladder simply retries once.
+        kill_process_tree(proc.pid, force=False)
         try:
             proc.wait(timeout=_KILL_GRACE_S)
         except subprocess.TimeoutExpired:
-            _kill_process_group(proc.pid, _signal_mod.SIGKILL)
+            kill_process_tree(proc.pid, force=True)
             try:
                 proc.wait(timeout=_KILL_GRACE_S)
             except subprocess.TimeoutExpired:

@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
+import sys
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -150,10 +151,24 @@ def execute_status_line_command(
     if not isinstance(command, str) or not command.strip():
         return None
 
+    # ``shell=True`` on Windows means cmd.exe — wrong for statusline
+    # commands written with POSIX semantics (same reasoning as the hook
+    # executor). Route through Git Bash there when available; a bash-less
+    # Windows falls back to cmd.exe.
+    run_args: Any = command
+    run_kwargs: dict[str, Any] = {"shell": True}
+    if sys.platform == "win32":
+        from src.utils.shell_platform import bash_env, find_bash
+
+        win_bash = find_bash()
+        if win_bash is not None:
+            run_args = [win_bash, "-c", command]
+            run_kwargs = {"shell": False, "env": bash_env()}
+
     try:
         proc = subprocess.run(
-            command,
-            shell=True,
+            run_args,
+            **run_kwargs,
             input=json.dumps(status_input),
             capture_output=True,
             text=True,

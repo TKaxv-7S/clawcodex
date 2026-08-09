@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import socket
+import sys
 
 import pytest
 import websockets
@@ -155,7 +156,15 @@ async def test_initial_connect_failure_exhausts_budget():
             base_url=f'ws://127.0.0.1:{port}',
         )
         await ws.connect()
-        await asyncio.wait_for(on_close_fired.wait(), timeout=10.0)
+        # A refused loopback connect fails in microseconds on POSIX but
+        # takes ~2 s on Windows (Winsock retransmits the SYN after the
+        # RST before giving up), so the six attempts that exhaust the
+        # budget legitimately need ~12 s there. Keep the tight bound on
+        # POSIX; the assertions below are identical on both platforms.
+        await asyncio.wait_for(
+            on_close_fired.wait(),
+            timeout=30.0 if sys.platform == 'win32' else 10.0,
+        )
     finally:
         ws_mod.RECONNECT_DELAY_SECONDS = original_delay
 

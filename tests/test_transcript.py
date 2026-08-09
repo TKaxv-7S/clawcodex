@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 from pathlib import Path
 
@@ -29,9 +30,12 @@ from src.agent.transcript import (
 
 def test_transcript_path_uses_agent_id_and_jsonl_suffix() -> None:
     p = get_agent_transcript_path("a1b2c3d4z")
-    assert p.endswith("/a1b2c3d4z.jsonl")
+    # Normalize to forward slashes so the shape assertions hold on
+    # Windows (``\`` separators) as well as POSIX — identity on POSIX.
+    posix = Path(p).as_posix()
+    assert posix.endswith("/a1b2c3d4z.jsonl")
     # Stable under .clawcodex/transcripts/
-    assert ".clawcodex/transcripts" in p
+    assert ".clawcodex/transcripts" in posix
 
 
 def test_transcript_path_rejects_traversal() -> None:
@@ -216,6 +220,10 @@ def test_reader_logs_partial_line_only_once(tmp_path: Path, caplog) -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX permission bits don't exist on Windows",
+)
 def test_writer_creates_file_with_user_only_permissions(tmp_path: Path) -> None:
     path = tmp_path / "x.jsonl"
     with TranscriptWriter(path) as w:

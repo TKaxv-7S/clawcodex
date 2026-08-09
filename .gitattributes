@@ -1,0 +1,27 @@
+# Force LF line endings for all text sources, on every platform.
+#
+# Borrowed from the DeepSeek-Reasonix Windows-support playbook: Windows git
+# defaults to core.autocrlf=true, so without this a Windows checkout (dev
+# machine or CI runner) materializes CRLF — breaking bash scripts
+# (install.sh), tests that compare "\n"-joined strings against file
+# contents, and formatter checks. PowerShell scripts are the one deliberate
+# exception: PS 5.1 wants CRLF, and .ps1 files are authored for Windows.
+.gitattributes text eol=lf
+.gitignore text eol=lf
+*.cfg text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.js text eol=lf
+*.json text eol=lf
+*.jsx text eol=lf
+*.md text eol=lf
+*.mjs text eol=lf
+*.py text eol=lf
+*.sh text eol=lf
+*.toml text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.txt text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.ps1 text eol=crlf

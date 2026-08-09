@@ -28,6 +28,12 @@ from typing import Any
 from ...context import ToolContext
 from src.tasks.local_shell import LocalShellTaskState
 from src.tasks_core import generate_task_id
+from src.utils.shell_platform import (
+    bash_argv,
+    bash_env,
+    kill_process_tree,
+    popen_tree_kwargs,
+)
 
 
 def _bg_output_dir() -> Path:
@@ -58,10 +64,6 @@ def spawn_background_bash(
     # of the legacy ``uuid4().hex[:8]``. Mirrors TS Task.ts:79-105 — the
     # ``b`` prefix is what TaskStop / TaskOutput dispatch on.
     task_id = generate_task_id("local_bash")
-    output_path = _bg_output_dir() / f"{task_id}.log"
-    output_path.touch(exist_ok=True)
-
-    output_handle = open(output_path, "wb", buffering=0)
 
     # Same wrapper the foreground path uses, so a trailing ``cd`` still writes
     # the final PWD for inspection. Exit code is appended to the log after the
@@ -72,23 +74,35 @@ def spawn_background_bash(
         f"echo \"__CLAWCODEX_EXIT__=$__rc\" >&2; "
         f"exit $__rc"
     )
+    # Resolve the argv BEFORE opening the log handle so a missing Git Bash
+    # (BashNotFoundError, Windows) propagates without leaking the open file.
+    argv = bash_argv(wrapped)
+
+    output_path = _bg_output_dir() / f"{task_id}.log"
+    output_path.touch(exist_ok=True)
+
+    output_handle = open(output_path, "wb", buffering=0)
 
     # ``stdin=DEVNULL`` mirrors the foreground bash path: prevents background
     # commands that read fd 0 from blocking on a TTY inherited from clawcodex's
     # REPL (see bash_tool.py:_run_bash_with_abort for the same reasoning).
+    # ``bash_argv`` resolves Git Bash on Windows (raising BashNotFoundError
+    # with an install hint when absent — the caller surfaces it);
+    # ``popen_tree_kwargs`` is start_new_session on POSIX and
+    # CREATE_NEW_PROCESS_GROUP on Windows, keeping the tree killable.
     from src.utils.subprocess_env import subprocess_env
 
     proc = subprocess.Popen(
-        ["bash", "-lc", wrapped],
+        argv,
         cwd=str(cwd),
         # Scrub secret env vars when CLAUDE_CODE_SUBPROCESS_ENV_SCRUB is set,
         # so a prompt-injected background command can't exfiltrate a credential
         # via ${ANTHROPIC_API_KEY} (parity with TS subprocessEnv).
-        env=subprocess_env(),
+        env=bash_env(subprocess_env()),
         stdin=subprocess.DEVNULL,
         stdout=output_handle,
         stderr=subprocess.STDOUT,
-        start_new_session=True,
+        **popen_tree_kwargs(),
     )
 
     started_at = time.time()
@@ -356,10 +370,8 @@ def stop_background_bash(context: ToolContext, task_id: str) -> bool:
         context.runtime_tasks.update(task_id, _mark_killed)
     except Exception:  # noqa: BLE001
         pass
-    try:
-        # Kill the whole process group started with ``start_new_session=True``
-        # so that ``bash -lc "cmd"`` and any children terminate together.
-        os.killpg(os.getpgid(proc.pid), 15)
-    except (ProcessLookupError, PermissionError):
-        return False
+    # Kill the whole process tree (the group from ``popen_tree_kwargs`` on
+    # POSIX; ``taskkill /T`` walks the children on Windows) so that
+    # ``bash -lc "cmd"`` and any children terminate together.
+    kill_process_tree(proc.pid, force=False)
     return True

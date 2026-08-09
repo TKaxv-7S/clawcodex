@@ -292,10 +292,16 @@ def _agent_server_cmd(args) -> list[str]:
 
 def _child_env(args) -> dict[str, str]:
     """Env for the Ink client: where to find the backend command + the src root."""
+    import json
+
     env = dict(os.environ)
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = str(_REPO_ROOT) + (os.pathsep + existing if existing else "")
-    env["CLAWCODEX_AGENT_SERVER_CMD"] = " ".join(_agent_server_cmd(args))
+    # JSON array, not a space-join: ``sys.executable`` may contain spaces
+    # (``C:\Program Files\...``, ``/Users/First Last/...``) and the Ink
+    # client re-splits the value into argv (gatewayClient.resolveAgentCmd
+    # parses the JSON form and falls back to whitespace-splitting).
+    env["CLAWCODEX_AGENT_SERVER_CMD"] = json.dumps(_agent_server_cmd(args))
     # --worktree session block: read by the Ink TUI (banner + exit keep/remove
     # gating, validated against OWNER_PID/ppid) and inherited by the
     # agent-server child (exit-time git ops). cli.py stripped any INHERITED

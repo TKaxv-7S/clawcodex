@@ -655,7 +655,9 @@ class TestClawcodexDataDirLine(unittest.TestCase):
 
         assert line_default is not None and line_override is not None
         self.assertIn(default_root, line_default)
-        self.assertIn("/custom/cc", line_override)
+        # get_user_config_dir() renders the override natively (\custom\cc
+        # on Windows); str(Path(...)) builds the same spelling per host.
+        self.assertIn(str(Path("/custom/cc")), line_override)
         # Both still name the two subdirectories the model should grep.
         for line in (line_default, line_override):
             self.assertIn("sessions/", line)

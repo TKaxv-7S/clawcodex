@@ -191,8 +191,13 @@ class TestPermissionValidation:
 
 class TestManagedPath:
     def test_returns_none_when_no_managed_file(self):
+        # Bind the REAL getter before patching: the side_effect must not
+        # call the patched os.environ.get, or any lookup other than
+        # CLAUDE_MANAGED_SETTINGS_PATH (e.g. ProgramData on Windows)
+        # recurses into the mock forever.
+        real_get = os.environ.get
         with patch.dict(os.environ, {}, clear=False):
-            with patch("os.environ.get", side_effect=lambda k, *a: None if k == "CLAUDE_MANAGED_SETTINGS_PATH" else os.environ.get(k, *a)):
+            with patch("os.environ.get", side_effect=lambda k, *a: None if k == "CLAUDE_MANAGED_SETTINGS_PATH" else real_get(k, *a)):
                 # Most environments won't have the managed file
                 result = resolve_managed_settings_path()
                 # Just verify it doesn't crash — result may be None

@@ -114,7 +114,12 @@ class HasAutoMemPathOverrideTest(unittest.TestCase):
         self.assertIsNone(_validate_memory_path("/foo\0bar", expand_tilde=False))
 
     def test_absolute_accepted(self):
-        os.environ["CLAUDE_COWORK_MEMORY_PATH_OVERRIDE"] = "/tmp/memdir"
+        # Build the override from the platform temp root: "/tmp/memdir" is
+        # not an absolute path on Windows (no drive), where the validator
+        # rightly rejects it. On Linux this is still exactly /tmp/memdir.
+        os.environ["CLAUDE_COWORK_MEMORY_PATH_OVERRIDE"] = os.path.join(
+            tempfile.gettempdir(), "memdir"
+        )
         self.assertTrue(has_auto_mem_path_override())
 
 
@@ -139,16 +144,22 @@ class GetAutoMemPathTest(unittest.TestCase):
                 os.environ[k] = v
 
     def test_override_used_when_set(self):
-        os.environ["CLAUDE_COWORK_MEMORY_PATH_OVERRIDE"] = "/tmp/mymem"
-        self.assertEqual(get_auto_mem_path(), "/tmp/mymem" + os.sep)
+        # Platform-absolute override ("/tmp/mymem" has no drive on Windows,
+        # so the validator would reject it there). /tmp/mymem on Linux.
+        target = os.path.join(tempfile.gettempdir(), "mymem")
+        os.environ["CLAUDE_COWORK_MEMORY_PATH_OVERRIDE"] = target
+        self.assertEqual(get_auto_mem_path(), target + os.sep)
 
     def test_default_uses_base_plus_sanitized_root(self):
         with tempfile.TemporaryDirectory() as base:
             os.environ["CLAUDE_CODE_REMOTE_MEMORY_DIR"] = base
             path = get_auto_mem_path()
             self.assertTrue(path.endswith(os.sep))
-            self.assertIn("/projects/", path)
-            self.assertIn("/memory/", path)
+            # Normalize to forward slashes so the shape check is
+            # separator-agnostic (no-op on Linux).
+            posix = path.replace(os.sep, "/")
+            self.assertIn("/projects/", posix)
+            self.assertIn("/memory/", posix)
 
     def test_entrypoint_is_under_path(self):
         ep = get_auto_mem_entrypoint()
@@ -160,13 +171,21 @@ class GetAutoMemPathTest(unittest.TestCase):
 
         d = date(2026, 3, 5)
         log = get_auto_mem_daily_log_path(d)
-        self.assertTrue(log.endswith("/2026/03/2026-03-05.md"))
+        # Separator-agnostic tail check (no-op normalization on Linux).
+        self.assertTrue(
+            log.replace(os.sep, "/").endswith("/2026/03/2026-03-05.md")
+        )
 
 
 class IsAutoMemPathTest(unittest.TestCase):
     def setUp(self):
         self._saved = os.environ.get("CLAUDE_COWORK_MEMORY_PATH_OVERRIDE")
-        os.environ["CLAUDE_COWORK_MEMORY_PATH_OVERRIDE"] = "/tmp/test-mem"
+        # Platform-absolute base ("/tmp/test-mem" has no drive on Windows,
+        # so the override validator would reject it there and every check
+        # below would run against the default dir instead). On Linux this
+        # is still exactly /tmp/test-mem.
+        self._base = os.path.join(tempfile.gettempdir(), "test-mem")
+        os.environ["CLAUDE_COWORK_MEMORY_PATH_OVERRIDE"] = self._base
 
     def tearDown(self):
         if self._saved is None:
@@ -175,18 +194,22 @@ class IsAutoMemPathTest(unittest.TestCase):
             os.environ["CLAUDE_COWORK_MEMORY_PATH_OVERRIDE"] = self._saved
 
     def test_inside_returns_true(self):
-        self.assertTrue(is_auto_mem_path("/tmp/test-mem/foo.md"))
+        self.assertTrue(is_auto_mem_path(os.path.join(self._base, "foo.md")))
 
     def test_outside_returns_false(self):
         self.assertFalse(is_auto_mem_path("/etc/passwd"))
 
     def test_traversal_blocked(self):
-        # ../foo within /tmp/test-mem normalizes to /tmp/foo, outside
-        self.assertFalse(is_auto_mem_path("/tmp/test-mem/../foo.md"))
+        # ../foo within <tmp>/test-mem normalizes to <tmp>/foo, outside
+        self.assertFalse(
+            is_auto_mem_path(os.path.join(self._base, "..", "foo.md"))
+        )
 
     def test_prefix_attack_blocked(self):
-        # /tmp/test-mem-evil/foo should not match /tmp/test-mem/
-        self.assertFalse(is_auto_mem_path("/tmp/test-mem-evil/foo.md"))
+        # <tmp>/test-mem-evil/foo should not match <tmp>/test-mem/
+        self.assertFalse(
+            is_auto_mem_path(os.path.join(self._base + "-evil", "foo.md"))
+        )
 
 
 class FindCanonicalGitRootTest(unittest.TestCase):

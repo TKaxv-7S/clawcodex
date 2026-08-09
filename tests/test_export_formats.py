@@ -9,6 +9,8 @@ result objects -> :class:`~src.utils.export_formats.ParsedExportArgs` field read
 
 from __future__ import annotations
 
+import os
+
 from src.utils.export_formats import (
     ParsedExportArgs,
     ensure_export_filename_extension,
@@ -240,9 +242,11 @@ class TestParseExportArgs:
 
 class TestResolveExportFilepath:
     def test_resolves_relative_export_filenames_under_cwd(self) -> None:
+        # os.path.join mirrors the resolver's native separator ("/" on
+        # Linux, "\" on Windows) without weakening the check.
         assert (
             resolve_export_filepath("/work/project", "transcript.md")
-            == "/work/project/transcript.md"
+            == os.path.join("/work/project", "transcript.md")
         )
 
     def test_preserves_absolute_export_filenames(self) -> None:

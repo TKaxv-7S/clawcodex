@@ -30,7 +30,11 @@ _COMMAND_RE = re.compile(r"^/([a-zA-Z][a-zA-Z0-9_-]*)(?:\s+(.*))?$", re.DOTALL)
 # (e.g. ``@anthropic-ai/sdk``) is only treated as a path mention when it contains
 # a path separator — otherwise it's just a username-style mention and ignored.
 _FILE_MENTION_RE = re.compile(
-    r"(?:^|(?<=\s))@(?!\")([^\s,;:\"'`\[\](){}]+)"
+    # Optional Windows drive prefix (``C:\`` / ``C:/``) before the main
+    # capture: ``:`` is otherwise excluded (it ends prose like "see @foo:"),
+    # which would truncate ``@C:\proj\x.py`` to ``C``. NTFS filenames cannot
+    # contain ``:``, so only the drive position needs the carve-out.
+    r"(?:^|(?<=\s))@(?!\")((?:[A-Za-z]:[\\/])?[^\s,;:\"'`\[\](){}]+)"
 )
 
 # Match ``@agent-<type>`` and ``@"<type> (agent)"`` mentions, mirroring
@@ -144,6 +148,7 @@ def _extract_file_mentions(text: str, cwd: str | None = None) -> list[str]:
             path_str.startswith(("/", "~", "./", "../"))
             or "/" in path_str
             or "." in path_str
+            or "\\" in path_str  # Windows separators count as path-ish too
         )
         if not looks_like_path:
             continue
@@ -513,6 +518,7 @@ def expand_at_mentions(
             raw.startswith(("/", "~", "./", "../"))
             or "/" in raw
             or "." in raw
+            or "\\" in raw  # Windows separators count as path-ish too
         ):
             continue
 

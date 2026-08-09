@@ -31,6 +31,12 @@ sub-PIPE_BUF granularity is not possible. Lines >4 KiB *can*
 interleave under heavy concurrency; the reader's tolerant parser
 absorbs the resulting partial line.
 
+Windows has no kernel-atomic ``O_APPEND``: the CRT emulates it as
+seek-to-end-then-write, two steps that race between writers on
+separate fds (lost/overwritten lines, not just interleaves). There,
+writers serialize on an msvcrt region lock held on a ``.lock``
+sidecar for the write's duration — see ``_append_lock``.
+
 Out of scope (per critic concern C4 / Phase 11)
 -----------------------------------------------
 
@@ -39,14 +45,24 @@ under this WI; a separate ticket lands the cleanup policy.
 """
 from __future__ import annotations
 
+import errno
 import json
 import logging
 import os
 import re
 import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterator, Literal
+
+# msvcrt is Windows-only. POSIX needs no import: the kernel's atomic
+# ``O_APPEND`` already provides the no-interleave guarantee documented
+# in the module docstring's Concurrency section.
+try:
+    import msvcrt
+except ImportError:  # POSIX — kernel O_APPEND is atomic; no lock needed.
+    msvcrt = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +167,54 @@ class TeammateMessage:
 # ---------------------------------------------------------------------------
 
 
+@contextmanager
+def _append_lock(path: Path) -> Iterator[None]:
+    """Serialize appends to ``path`` on Windows; no-op on POSIX.
+
+    POSIX needs nothing here — kernel ``O_APPEND`` makes each write
+    atomic. The Windows CRT emulates ``O_APPEND`` as seek-to-end +
+    write, so two writers on separate fds can seek to the same end and
+    overwrite each other; an exclusive lock must cover the write.
+
+    NT region locks are *mandatory*: locking bytes of the data file
+    itself would make a concurrent ``read_mailbox`` hit a lock
+    violation mid-read. Lock byte 0 of a ``<path>.lock`` sidecar
+    instead — readers never open it (same sidecar convention as
+    ``memory/store.py``). ``LK_NBLCK`` + 1 ms sleep rather than
+    ``LK_LOCK`` because the latter retries once per *second* and gives
+    up (raises) after ten tries — a busy mailbox would stall, then
+    drop messages. The kernel releases the region if the holder dies
+    mid-write, so waiters never hang on a crashed process.
+    """
+    if msvcrt is None:
+        yield
+        return
+    lock_fd = os.open(f"{path}.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        while True:
+            try:
+                msvcrt.locking(lock_fd, msvcrt.LK_NBLCK, 1)
+                break
+            except OSError as exc:
+                # EACCES == "another handle holds the region" — wait our
+                # turn. Anything else (EBADF, EINVAL) is a real bug;
+                # retrying would spin forever, so raise.
+                if exc.errno != errno.EACCES:
+                    raise
+                time.sleep(0.001)
+        try:
+            yield
+        finally:
+            try:
+                # Unlock must target the offset the lock was taken at.
+                os.lseek(lock_fd, 0, os.SEEK_SET)
+                msvcrt.locking(lock_fd, msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
+    finally:
+        os.close(lock_fd)
+
+
 def write_to_mailbox(
     recipient_name: str,
     message: TeammateMessage,
@@ -161,8 +225,10 @@ def write_to_mailbox(
     """Append ``message`` to ``<recipient>.jsonl`` as one UTF-8 JSON line.
 
     Atomic at line granularity (single ``os.write`` of the encoded
-    line on an ``O_APPEND`` fd). Synchronous — callers must NOT hold
-    the runtime_tasks RLock across this call (A6/C5 contract).
+    line on an ``O_APPEND`` fd on POSIX; the same write under the
+    ``_append_lock`` sidecar lock on Windows). Synchronous — callers
+    must NOT hold the runtime_tasks RLock across this call (A6/C5
+    contract).
     """
     path = get_inbox_path(recipient_name, team_name, workspace_root)
     line = json.dumps(message.to_jsonable(), ensure_ascii=False, separators=(",", ":")) + "\n"
@@ -174,20 +240,21 @@ def write_to_mailbox(
     # readable by the user only. ``O_CLOEXEC`` is POSIX-only; on Windows
     # it is absent (and fds are non-inheritable by default since PEP 446),
     # so fall back to 0.
-    fd = os.open(
-        str(path),
-        os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_CLOEXEC", 0),
-        0o600,
-    )
-    try:
-        view = memoryview(encoded)
-        while view:
-            written = os.write(fd, view)
-            if written <= 0:
-                raise OSError(f"mailbox write returned {written} for {path}")
-            view = view[written:]
-    finally:
-        os.close(fd)
+    with _append_lock(path):
+        fd = os.open(
+            str(path),
+            os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_CLOEXEC", 0),
+            0o600,
+        )
+        try:
+            view = memoryview(encoded)
+            while view:
+                written = os.write(fd, view)
+                if written <= 0:
+                    raise OSError(f"mailbox write returned {written} for {path}")
+                view = view[written:]
+        finally:
+            os.close(fd)
 
 
 # ---------------------------------------------------------------------------

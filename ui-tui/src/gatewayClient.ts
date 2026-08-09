@@ -58,7 +58,25 @@ const CLAWCODEX_VERSION = '1.4.0'
 function resolveAgentCmd(): string[] {
   const raw = process.env.CLAWCODEX_AGENT_SERVER_CMD?.trim()
 
-  return raw ? raw.split(/\s+/) : ['clawcodex', 'agent-server']
+  if (!raw) {return ['clawcodex', 'agent-server']}
+
+  // JSON-array form (what the Python launcher now sets): survives argv
+  // elements containing spaces — e.g. a Windows interpreter path under
+  // `C:\Program Files\...` or a user profile with a space. Legacy
+  // space-joined values (older launchers) keep the whitespace split.
+  if (raw.startsWith('[')) {
+    try {
+      const parsed: unknown = JSON.parse(raw)
+
+      if (Array.isArray(parsed) && parsed.length > 0 && parsed.every(x => typeof x === 'string')) {
+        return parsed
+      }
+    } catch {
+      // fall through to the legacy split
+    }
+  }
+
+  return raw.split(/\s+/)
 }
 
 function safeJson(v: unknown): string {

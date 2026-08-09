@@ -308,6 +308,15 @@ def _run_in_subprocess(
     return proc.returncode, out.decode("utf-8", errors="replace"), err.decode("utf-8", errors="replace")
 
 
+@unittest.skipIf(
+    sys.platform == "win32",
+    "POSIX signal delivery: Popen.send_signal(SIGTERM) is TerminateProcess "
+    "on Windows — the child dies before its handler can run, so the drain "
+    "path cannot be exercised cross-process. The production path is fine "
+    "(setup_graceful_shutdown registers via signal.signal, which Windows "
+    "honors for console Ctrl events); only this test's delivery mechanism "
+    "is POSIX-bound.",
+)
 class TestSigtermPathRunsCleanups(unittest.TestCase):
     """SIGTERM → signal handler → graceful_shutdown_sync →
     _run_all_cleanups → sys.exit(128+15=143). Cleanups fire."""
@@ -334,6 +343,15 @@ class TestSigtermPathRunsCleanups(unittest.TestCase):
         self.assertEqual(rc, 143, msg=f"unexpected rc={rc}. out={out} err={err}")
 
 
+@unittest.skipIf(
+    sys.platform == "win32",
+    "POSIX signal delivery: Popen.send_signal(SIGINT) raises ValueError on "
+    "Windows (only SIGTERM/CTRL_C_EVENT/CTRL_BREAK_EVENT are supported), and "
+    "a real Ctrl-C needs a shared console group — which would interrupt "
+    "pytest itself. CTRL_BREAK maps to SIGBREAK, not SIGINT, so it cannot "
+    "stand in. Only the cross-process delivery is POSIX-bound; the handler "
+    "itself is installed via signal.signal and works under a real console.",
+)
 class TestSigintDuringPrefetch(unittest.TestCase):
     """SIGINT while a prefetch handle is in-flight must not leave a zombie."""
 
@@ -357,6 +375,11 @@ class TestSigintDuringPrefetch(unittest.TestCase):
         self.assertEqual(rc, 130, msg=f"unexpected rc={rc}. out={out} err={err}")
 
 
+@unittest.skipIf(
+    sys.platform == "win32",
+    "POSIX signal delivery: Popen.send_signal(SIGINT) raises ValueError on "
+    "Windows — see TestSigintDuringPrefetch for the full rationale.",
+)
 class TestSigintBeforePrefetchStarted(unittest.TestCase):
     """SIGINT before any prefetch is fired must exit cleanly (no
     'cleanup error' messages, code 130)."""

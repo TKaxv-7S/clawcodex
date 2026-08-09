@@ -436,7 +436,9 @@ def test_relocation_conserves_content_exactly(tmp_path, monkeypatch):
     double instruction).
     """
     monkeypatch.setenv("CLAUDE_COWORK_MEMORY_PATH_OVERRIDE", str(tmp_path))
-    (tmp_path / "MEMORY.md").write_text("- [Thing](thing.md) — hook\n")
+    # encoding= matters: the em-dash round-trips through the source's
+    # utf-8 read only if written as utf-8 (Windows defaults to cp1252).
+    (tmp_path / "MEMORY.md").write_text("- [Thing](thing.md) — hook\n", encoding="utf-8")
 
     blocks = build_full_system_prompt_blocks(cwd=str(tmp_path), non_interactive=True)
     flat, empty_tail = _split_system_prompt_blocks(blocks, relocate_request_scope=False)
@@ -468,12 +470,15 @@ def test_prefix_survives_a_mid_session_memory_write(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDE_COWORK_MEMORY_PATH_OVERRIDE", str(tmp_path))
     entrypoint = tmp_path / "MEMORY.md"
 
-    entrypoint.write_text("- [First](first.md) — hook\n")
+    entrypoint.write_text("- [First](first.md) — hook\n", encoding="utf-8")
     sys1, tail1 = _split_system_prompt_blocks(
         build_full_system_prompt_blocks(cwd=str(tmp_path), non_interactive=True),
         relocate_request_scope=True,
     )
-    entrypoint.write_text("- [First](first.md) — hook\n- [Second](second.md) — hook\n")
+    entrypoint.write_text(
+        "- [First](first.md) — hook\n- [Second](second.md) — hook\n",
+        encoding="utf-8",
+    )
     sys2, tail2 = _split_system_prompt_blocks(
         build_full_system_prompt_blocks(cwd=str(tmp_path), non_interactive=True),
         relocate_request_scope=True,
@@ -498,7 +503,9 @@ def test_memory_sections_rejoin_to_the_legacy_single_section():
     from src.memdir import build_memory_prompt, build_memory_prompt_parts
 
     with tempfile.TemporaryDirectory() as tmp:
-        (Path(tmp) / "MEMORY.md").write_text("- [Thing](thing.md) — hook\n")
+        (Path(tmp) / "MEMORY.md").write_text(
+            "- [Thing](thing.md) — hook\n", encoding="utf-8"
+        )
         whole = build_memory_prompt(display_name="auto memory", memory_dir=tmp)
         guidance, index = build_memory_prompt_parts(
             display_name="auto memory", memory_dir=tmp

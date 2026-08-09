@@ -117,26 +117,26 @@ class TestExecutionEnforcement:
 
     def test_if_excludes_nonmatching_command(self, tmp_path):
         marker = tmp_path / "ran"
-        ctx = _ctx(self._hook(f"touch {marker}", "Bash(git *)"))
+        ctx = _ctx(self._hook(f"touch {marker.as_posix()}", "Bash(git *)"))
         _run(ctx, "Bash", {"command": "ls -la"})
         assert not marker.exists(), "the `if` filter must skip a non-git command"
 
     def test_if_allows_matching_command(self, tmp_path):
         marker = tmp_path / "ran"
-        ctx = _ctx(self._hook(f"touch {marker}", "Bash(git *)"))
+        ctx = _ctx(self._hook(f"touch {marker.as_posix()}", "Bash(git *)"))
         _run(ctx, "Bash", {"command": "git commit -m x"})
         assert marker.exists(), "the `if` filter must run for a matching command"
 
     def test_no_if_still_runs(self, tmp_path):
         marker = tmp_path / "ran"
-        ctx = _ctx(self._hook(f"touch {marker}", None))
+        ctx = _ctx(self._hook(f"touch {marker.as_posix()}", None))
         _run(ctx, "Bash", {"command": "anything"})
         assert marker.exists(), "no `if` → unconditional (unchanged behavior)"
 
     def test_file_if_excludes_nonmatching_path(self, tmp_path):
         marker = tmp_path / "ran"
         ctx = _ctx([HookConfig(
-            type="command", command=f"touch {marker}", if_condition="Read(*.ts)",
+            type="command", command=f"touch {marker.as_posix()}", if_condition="Read(*.ts)",
             source=HookSource.PROJECT_SETTINGS,
         )])
         _run(ctx, "Read", {"file_path": "notes.md"})
@@ -145,7 +145,7 @@ class TestExecutionEnforcement:
     def test_file_if_allows_matching_path(self, tmp_path):
         marker = tmp_path / "ran"
         ctx = _ctx([HookConfig(
-            type="command", command=f"touch {marker}", if_condition="Read(*.ts)",
+            type="command", command=f"touch {marker.as_posix()}", if_condition="Read(*.ts)",
             source=HookSource.PROJECT_SETTINGS,
         )])
         _run(ctx, "Read", {"file_path": "app.ts"})

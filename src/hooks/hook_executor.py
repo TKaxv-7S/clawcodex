@@ -18,6 +18,7 @@ import asyncio
 import json
 import logging
 import os
+import sys
 import time
 import warnings
 from typing import Any, AsyncGenerator
@@ -460,14 +461,33 @@ async def _execute_command_hook(
             # Default (bash on POSIX via /bin/sh, the historical path).
             # An explicit ``shell="bash"`` lands here too — it's a no-op
             # alias for ``None`` per the chapter's "defaults to bash"
-            # contract.
-            process = await asyncio.create_subprocess_shell(
-                command,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=_build_hook_env(hook, stdin_data, tool_use_context),
-            )
+            # contract. On Windows ``create_subprocess_shell`` would mean
+            # cmd.exe — wrong for hook bodies written for bash — so route
+            # through Git Bash there when available (parity with the Bash
+            # tool); a bash-less Windows falls back to cmd.exe rather than
+            # failing the hook outright.
+            from src.utils.shell_platform import bash_env, find_bash
+
+            hook_env = _build_hook_env(hook, stdin_data, tool_use_context)
+            win_bash = find_bash() if sys.platform == "win32" else None
+            if win_bash is not None:
+                process = await asyncio.create_subprocess_exec(
+                    win_bash,
+                    "-c",
+                    command,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=bash_env(hook_env),
+                )
+            else:
+                process = await asyncio.create_subprocess_shell(
+                    command,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=hook_env,
+                )
 
         try:
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
