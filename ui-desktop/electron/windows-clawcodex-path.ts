@@ -176,8 +176,10 @@ export interface ResolveVenvClawCodexCommandDeps {
     clawcodexHome: string
     pythonPathEntries: string[]
     venvRoot: string
+    gitBinary?: string
   }) => Record<string, string>
   clawcodexHome: string
+  gitBinary?: string
   resolvePath: (...segments: string[]) => string
   dirname: (p: string) => string
   basename: (p: string) => string
@@ -227,6 +229,7 @@ export function resolveVenvClawCodexCommand(
     getVenvSitePackagesEntries,
     buildDesktopBackendEnv,
     clawcodexHome,
+    gitBinary,
     resolvePath,
     dirname,
     basename,
@@ -282,7 +285,8 @@ export function resolveVenvClawCodexCommand(
     env: buildDesktopBackendEnv({
       clawcodexHome,
       pythonPathEntries: [...(directoryExists(root) ? [root] : []), ...getVenvSitePackagesEntries(venvRoot)],
-      venvRoot
+      venvRoot,
+      gitBinary
     }),
     kind: 'python',
     root,

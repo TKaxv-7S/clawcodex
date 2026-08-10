@@ -82,8 +82,10 @@ async def _run_git(*args: str, cwd: str) -> tuple[int, str]:
     and we ``kill()`` the subprocess on timeout.
     """
     try:
+        from src.utils.shell_platform import find_git
+
         proc = await asyncio.create_subprocess_exec(
-            'git', *args,
+            find_git(), *args,
             cwd=cwd,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,

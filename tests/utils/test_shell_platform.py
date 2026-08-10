@@ -25,6 +25,15 @@ def _reset_bash_memo():
     sp._bash_path = before
 
 
+@pytest.fixture(autouse=True)
+def _reset_git_memo():
+    """Each test sees a fresh (unresolved) git lookup."""
+    before = sp._git_path
+    sp._git_path = False
+    yield
+    sp._git_path = before
+
+
 # ─── find_bash ───────────────────────────────────────────────────────────────
 
 
@@ -90,6 +99,47 @@ def test_bash_argv_raises_when_absent(monkeypatch):
         sp.bash_argv("echo hi")
     # The error must be actionable — it is what the Bash tool surfaces.
     assert "Git" in str(exc_info.value)
+
+
+# ─── find_git ────────────────────────────────────────────────────────────────
+
+
+def test_find_git_env_override_wins(monkeypatch, tmp_path):
+    fake = tmp_path / "git.exe"
+    fake.write_text("")
+    monkeypatch.setenv("CLAWCODEX_GIT_PATH", str(fake))
+    assert sp.find_git() == str(fake)
+
+
+def test_find_git_prefers_path(monkeypatch, tmp_path):
+    monkeypatch.delenv("CLAWCODEX_GIT_PATH", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_GIT_PATH", raising=False)
+    fake = tmp_path / "gitonpath"
+    fake.write_text("")
+    monkeypatch.setattr(sp.shutil, "which", lambda name: str(fake) if name == "git" else None)
+    assert sp.find_git() == str(fake)
+
+
+def test_find_git_falls_back_to_bare_name(monkeypatch):
+    # The load-bearing property: even when git is NOT on PATH and no override
+    # is set, find_git returns SOMETHING callable-shaped (the bare name) rather
+    # than raising — the GUI-backend case degrades to prior behavior, never a
+    # crash. On a machine WITH Git for Windows installed it resolves the real
+    # exe; here we only assert the no-crash contract.
+    monkeypatch.delenv("CLAWCODEX_GIT_PATH", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_GIT_PATH", raising=False)
+    monkeypatch.setattr(sp.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(sp, "_git_candidates", lambda: [])
+    assert sp.find_git() == "git"
+
+
+def test_find_git_memoized(monkeypatch, tmp_path):
+    fake = tmp_path / "git.exe"
+    fake.write_text("")
+    monkeypatch.setenv("CLAWCODEX_GIT_PATH", str(fake))
+    assert sp.find_git() == str(fake)
+    monkeypatch.setenv("CLAWCODEX_GIT_PATH", str(tmp_path / "other.exe"))
+    assert sp.find_git() == str(fake)  # cached; env change not re-read
 
 
 def test_bash_env_fresh_dict_and_windows_knob(monkeypatch):

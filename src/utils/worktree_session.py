@@ -175,8 +175,10 @@ def _git(
     if no_prompt:
         env = {**os.environ, **_GIT_NO_PROMPT_ENV}
     try:
+        from src.utils.shell_platform import find_git
+
         result = subprocess.run(
-            ["git", *args],
+            [find_git(), *args],
             capture_output=True,
             text=True,
             cwd=cwd,

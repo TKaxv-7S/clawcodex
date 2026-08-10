@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from src.utils.shell_platform import find_git
+
 logger = logging.getLogger(__name__)
 
 
@@ -18,8 +20,12 @@ def _run_git(
 ) -> tuple[str, str, int]:
     effective_cwd = cwd or os.getcwd()
     try:
+        # ``find_git()`` not a bare ``"git"``: a GUI-launched backend (the
+        # desktop app) inherits a PATH that omits Git for Windows, so the
+        # bare name ENOENTs and every repo probe silently fails — which is
+        # exactly what made the desktop's worktree lanes disappear on Windows.
         result = subprocess.run(
-            ["git", *args],
+            [find_git(), *args],
             capture_output=True,
             text=True,
             cwd=effective_cwd,
@@ -117,7 +123,7 @@ def get_file_status(cwd: str | None = None) -> list[FileStatus]:
     effective_cwd = cwd or os.getcwd()
     try:
         result = subprocess.run(
-            ["git", "status", "--porcelain", "-z"],
+            [find_git(), "status", "--porcelain", "-z"],
             capture_output=True,
             text=True,
             cwd=effective_cwd,

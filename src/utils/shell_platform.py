@@ -45,6 +45,7 @@ __all__ = [
     "bash_argv",
     "bash_env",
     "find_bash",
+    "find_git",
     "kill_process_tree",
     "popen_tree_kwargs",
     "pwd_command",
@@ -250,3 +251,80 @@ def kill_process_tree(pid: int, *, force: bool = True) -> None:
         # insufficient privileges — the caller's subsequent wait()/poll()
         # surfaces the child's true state either way.
         pass
+
+
+#: Env override for the git binary, then the CLAUDE_CODE_ twin (parity).
+_GIT_ENV_OVERRIDES = ("CLAWCODEX_GIT_PATH", "CLAUDE_CODE_GIT_PATH")
+
+_git_path: str | None | bool = False
+
+
+def _git_candidates() -> list[Path]:
+    """Well-known Git-for-Windows ``git.exe`` locations, most-authoritative first.
+
+    Includes the desktop app's own managed git
+    (``%LOCALAPPDATA%\\clawcodex\\git``) so a desktop-provisioned git is found
+    even when nothing is on PATH.
+    """
+    candidates: list[Path] = []
+    for env_var, suffixes in (
+        ("ProgramFiles", (r"Git\cmd\git.exe", r"Git\bin\git.exe")),
+        ("ProgramFiles(x86)", (r"Git\cmd\git.exe", r"Git\bin\git.exe")),
+        ("LOCALAPPDATA", (
+            r"Programs\Git\cmd\git.exe",
+            r"clawcodex\git\cmd\git.exe",
+            r"clawcodex\git\bin\git.exe",
+        )),
+        ("USERPROFILE", (r"scoop\apps\git\current\cmd\git.exe",)),
+    ):
+        base = os.environ.get(env_var)
+        if base:
+            for suffix in suffixes:
+                candidates.append(Path(base) / suffix)
+    return candidates
+
+
+def find_git() -> str:
+    """Absolute path of the git binary, or the bare name ``"git"`` as a fallback.
+
+    Why this exists: a bare ``["git", ...]`` relies on ``git`` being on the
+    process PATH. That holds for a shell-launched CLI, but a **GUI-launched**
+    parent (the desktop app's Electron process) inherits only the minimal
+    login PATH, which on Windows routinely omits Git for Windows
+    (``C:\\Program Files\\Git\\cmd``). The Python backend it spawns then fails
+    every ``git`` call — ``git_repo_root`` comes back ``None``, sessions never
+    group under a repo, and the desktop's worktree lanes/selection vanish.
+    Resolving the binary explicitly (env override → PATH → known install
+    dirs) makes backend git work regardless of the spawning process's PATH.
+
+    POSIX: ``git`` from PATH (present on every supported system), falling back
+    to the bare name. Memoized per process (including the fallback).
+    """
+    global _git_path
+    if _git_path is not False:
+        return _git_path  # type: ignore[return-value]
+
+    for var in _GIT_ENV_OVERRIDES:
+        override = os.environ.get(var)
+        if override and Path(override).is_file():
+            _git_path = str(Path(override))
+            return _git_path
+
+    on_path = shutil.which("git")
+    if on_path:
+        _git_path = str(Path(on_path))
+        return _git_path
+
+    if sys.platform == "win32":
+        for cand in _git_candidates():
+            try:
+                if cand.is_file():
+                    _git_path = str(cand)
+                    return _git_path
+            except OSError:  # pragma: no cover - unreadable mount/ACL edge
+                continue
+
+    # Nothing resolved — return the bare name so callers behave exactly as
+    # before (their own error handling reports "git not found").
+    _git_path = "git"
+    return _git_path

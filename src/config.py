@@ -39,8 +39,10 @@ def _find_git_root(cwd: str | Path | None = None) -> Path | None:
     """Find the git root directory starting from *cwd*."""
     start = Path(cwd) if cwd else Path.cwd()
     try:
+        from src.utils.shell_platform import find_git
+
         result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
+            [find_git(), "rev-parse", "--show-toplevel"],
             capture_output=True, text=True, cwd=str(start), timeout=5,
         )
         if result.returncode == 0:

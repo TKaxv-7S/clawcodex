@@ -88,19 +88,41 @@ function clawcodexManagedNodePathEntries(
   return platform === 'win32' ? [root, bin] : [bin, root]
 }
 
+// Git-for-Windows dirs to graft onto the backend PATH. A GUI-launched app
+// inherits the minimal login PATH, which routinely omits Git for Windows — so
+// the spawned Python backend's `git` calls ENOENT, git_repo_root comes back
+// null, and the sidebar's repo/worktree lanes never appear. The backend now
+// also resolves git explicitly (src/utils/shell_platform.find_git), but
+// putting git on PATH fixes every backend `git` call, not just the rerouted
+// ones. Empty off win32 (POSIX GUIs get the sane entries below).
+function gitPathEntries(gitBinary, { platform = process.platform, pathModule = pathModuleForPlatform(platform) }: any = {}) {
+  if (platform !== 'win32' || !gitBinary) {
+    return []
+  }
+
+  // gitBinary is <root>\cmd\git.exe (or <root>\bin\git.exe); expose both the
+  // cmd wrappers and the mingw64 binaries so git and its helpers resolve.
+  const cmdDir = pathModule.dirname(gitBinary)
+  const gitRoot = pathModule.dirname(cmdDir)
+
+  return [cmdDir, pathModule.join(gitRoot, 'mingw64', 'bin'), pathModule.join(gitRoot, 'bin')]
+}
+
 function buildDesktopBackendPath({
   clawcodexHome,
   venvRoot,
   currentPath = '',
+  gitBinary = '',
   platform = process.platform,
   pathModule = pathModuleForPlatform(platform)
 }: any = {}) {
   const delimiter = delimiterForPlatform(platform)
   const clawcodexNodeDirs = clawcodexManagedNodePathEntries(clawcodexHome, { platform, pathModule })
   const venvBin = venvRoot ? pathModule.join(venvRoot, platform === 'win32' ? 'Scripts' : 'bin') : null
+  const gitDirs = gitPathEntries(gitBinary, { platform, pathModule })
   const saneEntries = platform === 'win32' ? [] : POSIX_SANE_PATH_ENTRIES
 
-  return appendUniquePathEntries([clawcodexNodeDirs, venvBin, currentPath, saneEntries], { delimiter })
+  return appendUniquePathEntries([clawcodexNodeDirs, venvBin, gitDirs, currentPath, saneEntries], { delimiter })
 }
 
 function normalizeClawCodexHomeRoot(clawcodexHome, { pathModule = pathModuleForPlatform(process.platform) }: any = {}) {
@@ -118,10 +140,32 @@ function normalizeClawCodexHomeRoot(clawcodexHome, { pathModule = pathModuleForP
   return resolved
 }
 
+// Env fragment that grafts Git for Windows onto an inherited PATH, for a
+// backend descriptor that otherwise passes NO env override (the `.cmd`-shim
+// "existing CLI" path). Returns {} off win32 or without a resolved git, so
+// the caller's `env` stays empty exactly as before. Same rationale as
+// gitPathEntries: the GUI PATH omits git, so the backend's git probes fail.
+function graftGitOntoPath(currentEnv, gitBinary, { platform = process.platform, pathModule = pathModuleForPlatform(platform) }: any = {}) {
+  const gitDirs = gitPathEntries(gitBinary, { platform, pathModule })
+
+  if (!gitDirs.length) {
+    return {}
+  }
+
+  const key = pathEnvKey(currentEnv, platform)
+
+  return {
+    [key]: appendUniquePathEntries([gitDirs, currentPathValue(currentEnv, platform)], {
+      delimiter: delimiterForPlatform(platform)
+    })
+  }
+}
+
 function buildDesktopBackendEnv({
   clawcodexHome,
   pythonPathEntries = [],
   venvRoot,
+  gitBinary = '',
   currentEnv = process.env,
   platform = process.platform,
   pathModule = pathModuleForPlatform(platform)
@@ -142,6 +186,7 @@ function buildDesktopBackendEnv({
     [key]: buildDesktopBackendPath({
       clawcodexHome,
       venvRoot,
+      gitBinary,
       currentPath: currentPathValue(currentEnv, platform),
       platform,
       pathModule
@@ -155,6 +200,7 @@ export {
   buildDesktopBackendPath,
   clawcodexManagedNodePathEntries,
   delimiterForPlatform,
+  graftGitOntoPath,
   normalizeClawCodexHomeRoot,
   pathEnvKey,
   POSIX_SANE_PATH_ENTRIES

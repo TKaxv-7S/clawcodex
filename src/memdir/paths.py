@@ -203,8 +203,10 @@ def find_canonical_git_root(start: str | os.PathLike[str] | None = None) -> str 
     """
     cwd = str(start) if start else None
     try:
+        from src.utils.shell_platform import find_git
+
         result = subprocess.run(
-            ["git", "rev-parse", "--git-common-dir"],
+            [find_git(), "rev-parse", "--git-common-dir"],
             capture_output=True,
             text=True,
             cwd=cwd,

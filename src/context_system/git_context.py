@@ -80,8 +80,10 @@ def _git_cmd(
 ) -> str:
     """Run a git command and return stripped stdout or '' on error."""
     try:
+        from src.utils.shell_platform import find_git
+
         result = subprocess.run(
-            ["git", *args],
+            [find_git(), *args],
             capture_output=True,
             text=True,
             cwd=cwd,

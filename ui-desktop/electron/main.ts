@@ -35,7 +35,7 @@ import { classifyActiveRuntime } from './active-runtime-state'
 import { stopBackendChild as stopBackendChildImpl } from './backend-child'
 import { sourceDeclaresServe } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
-import { buildDesktopBackendEnv, clawcodexManagedNodePathEntries, normalizeClawCodexHomeRoot } from './backend-env'
+import { buildDesktopBackendEnv, clawcodexManagedNodePathEntries, graftGitOntoPath, normalizeClawCodexHomeRoot } from './backend-env'
 import { isReauthRequiredError, waitForClawCodexReady } from './backend-health'
 import {
   canImportClawCodexCli,
@@ -1873,6 +1873,7 @@ function unwrapWindowsVenvClawCodexCommand(command, backendArgs) {
     getVenvSitePackagesEntries,
     buildDesktopBackendEnv,
     clawcodexHome: CLAWCODEX_CONFIG_DIR,
+    gitBinary: resolveGitBinary(),
     resolvePath: (...segments) => path.resolve(...segments),
     dirname: p => path.dirname(p),
     basename: p => path.basename(p),
@@ -3463,6 +3464,7 @@ async function applyUpdatesPosixInApp(opts: any) {
           message: 'Backend updated. Quit and reopen ClawCodex to load the new version.'
         }
       }
+
       emitUpdateProgress({ stage: 'restart', message: 'Restarting ClawCodex…', percent: 100 })
       // Preserve launch context across the re-exec: replay the original args
       // (filtered of Electron internals) and the env/cwd that define which
@@ -3867,7 +3869,10 @@ function createPythonBackend(root, label, backendArgs, options: any = {}) {
     env: buildDesktopBackendEnv({
       clawcodexHome: CLAWCODEX_CONFIG_DIR,
       pythonPathEntries: [root, ...getVenvSitePackagesEntries(venvRoot)],
-      venvRoot
+      venvRoot,
+      // Put Git for Windows on the backend PATH so its `git` probes work
+      // (git_repo_root → repo/worktree lanes). GUI PATH omits it otherwise.
+      gitBinary: resolveGitBinary()
     }),
     root,
     bootstrap: Boolean(options.bootstrap),
@@ -3891,7 +3896,8 @@ function createActiveBackend(backendArgs) {
     env: buildDesktopBackendEnv({
       clawcodexHome: CLAWCODEX_CONFIG_DIR,
       pythonPathEntries: [ACTIVE_CLAWCODEX_ROOT, ...getVenvSitePackagesEntries(VENV_ROOT)],
-      venvRoot: VENV_ROOT
+      venvRoot: VENV_ROOT,
+      gitBinary: resolveGitBinary()
     }),
     root: ACTIVE_CLAWCODEX_ROOT,
     bootstrap: true,
@@ -4009,7 +4015,11 @@ function resolveClawCodexBackend(backendArgs) {
           command: clawcodexCommand,
           args: backendArgs,
           bootstrap: false,
-          env: {},
+          // Graft Git for Windows onto the backend PATH. This descriptor
+          // otherwise passes no env, so the .cmd-shim backend would inherit
+          // the GUI's git-less PATH — its `git` probes ENOENT, git_repo_root
+          // is null, and the sidebar's repo/worktree lanes never appear.
+          env: graftGitOntoPath(process.env, resolveGitBinary()),
           kind: 'command',
           shell: shellForProbe
         }

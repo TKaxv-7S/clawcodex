@@ -547,6 +547,7 @@ class GatewayConnection:
             "session.clear": self.session_clear,
             "session.title": self.session_title,
             "session.usage": self.session_usage,
+            "projects.tree": self.projects_tree,
             "prompt.submit": self.prompt_submit,
             "approval.respond": self.approval_respond,
             "permission.cycle": self.permission_cycle,
@@ -627,6 +628,75 @@ class GatewayConnection:
         return session
 
     # ── methods ──────────────────────────────────────────────────────────────
+
+    async def projects_tree(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Group saved + live sessions into the sidebar's project/repo/worktree
+        tree. Runs the git probes off the event loop (they shell out)."""
+        import asyncio as _asyncio
+
+        preview_limit = int(params.get("preview_limit") or 3)
+        return await _asyncio.to_thread(self._build_projects_tree, preview_limit)
+
+    def _build_projects_tree(self, preview_limit: int) -> dict[str, Any]:
+        from src.server.desktop_projects import build_project_tree
+        from src.server.desktop_sessions import list_session_rows
+        from src.utils.git import get_repo_root, list_worktrees
+
+        # All saved rows (limit=0 → no cap; the sidebar wants the full tree).
+        rows = list_session_rows(self.state.saved_sessions_dir(), limit=0)["sessions"]
+        # Merge live sessions the saved index hasn't captured yet, so a
+        # just-created session still places into its repo immediately.
+        seen = {r.get("id") for r in rows}
+        active_cwd: str | None = None
+        for session in self.state.sessions.values():
+            info = getattr(session, "init_info", None) or {}
+            cwd = info.get("cwd") if isinstance(info, dict) else None
+            if cwd:
+                active_cwd = cwd  # last live session's cwd = the active one
+            sid = getattr(session, "session_id", None)
+            if sid and sid not in seen:
+                rows.append({
+                    "id": sid, "title": "", "preview": "", "source": "desktop",
+                    "started_at": None, "last_active": None, "message_count": 0,
+                    "model": None, "cwd": cwd, "is_active": True, "profile": "default",
+                })
+                seen.add(sid)
+
+        # Per-cwd / per-repo memoized git probes: a tree can hold many sessions
+        # in the same repo, so probe each distinct path once.
+        repo_cache: dict[str, str | None] = {}
+        wt_cache: dict[str, list[str]] = {}
+
+        def worktrees_of(repo_root: str) -> list[str]:
+            # ``git worktree list`` is repo-global and main-first from ANY
+            # worktree in the repo, so this is correct whether keyed by the
+            # main root or a linked-worktree path.
+            if repo_root not in wt_cache:
+                wt_cache[repo_root] = [w.path for w in list_worktrees(repo_root) if w.path]
+            return wt_cache[repo_root]
+
+        def repo_root_of(cwd: str) -> str | None:
+            # ``rev-parse --show-toplevel`` inside a LINKED worktree returns the
+            # worktree's own toplevel, not the repo — which would spray each
+            # worktree into its own project. Resolve the MAIN worktree root
+            # (the first ``git worktree list`` entry) so linked worktrees group
+            # as lanes under their repo, matching the renderer's tree.
+            if cwd not in repo_cache:
+                top = get_repo_root(cwd)
+                if top:
+                    worktrees = worktrees_of(top)
+                    repo_cache[cwd] = worktrees[0] if worktrees else top
+                else:
+                    repo_cache[cwd] = None
+            return repo_cache[cwd]
+
+        return build_project_tree(
+            rows,
+            repo_root_of=repo_root_of,
+            worktrees_of=worktrees_of,
+            active_cwd=active_cwd,
+            preview_limit=preview_limit,
+        )
 
     async def session_create(self, params: dict[str, Any]) -> dict[str, Any]:
         session = await self._create(params.get("cwd"), None, params)

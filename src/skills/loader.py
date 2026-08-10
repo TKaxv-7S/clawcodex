@@ -839,9 +839,11 @@ def _is_path_gitignored(path: str, cwd: str) -> bool:
     keep working.
     """
     import subprocess
+
+    from src.utils.shell_platform import find_git
     try:
         result = subprocess.run(
-            ["git", "check-ignore", path],
+            [find_git(), "check-ignore", path],
             cwd=cwd,
             capture_output=True,
             text=True,
