@@ -35,6 +35,7 @@ These tests pin the parity at three layers:
 """
 from __future__ import annotations
 
+import sys
 import threading
 import time
 from pathlib import Path
@@ -46,6 +47,15 @@ from src.tool_system.tools.bash.bash_tool import (
     _run_bash_with_abort,
 )
 from src.utils.abort_controller import AbortController
+from src.utils.shell_platform import bash_argv
+
+# Resolve bash the way production does. A bare ``["bash", ...]`` argv resolves
+# via PATH, and on the Windows CI runner PATH's first ``bash.exe`` is the WSL
+# launcher at ``C:\Windows\System32\bash.exe`` — which exits immediately with
+# no distro installed, so ``sleep``/``echo`` never run and every timing
+# assertion below fails on Windows only. ``bash_argv`` resolves Git Bash
+# explicitly (the same helper ``_run_bash_with_abort``'s production callers
+# use), keeping these supervisor tests on the real shell on every platform.
 
 
 def test_run_bash_with_abort_sets_only_timed_out_on_timeout(tmp_path: Path) -> None:
@@ -56,7 +66,7 @@ def test_run_bash_with_abort_sets_only_timed_out_on_timeout(tmp_path: Path) -> N
     """
     start = time.monotonic()
     result = _run_bash_with_abort(
-        ["bash", "-lc", "sleep 3; echo done"],
+        bash_argv("sleep 3; echo done"),
         cwd=str(tmp_path),
         timeout_s=1,
         abort_signal=None,
@@ -70,11 +80,27 @@ def test_run_bash_with_abort_sets_only_timed_out_on_timeout(tmp_path: Path) -> N
         "timeout). Conflating them makes the model treat timed-out commands "
         "as user-cancelled and retry them on resume."
     )
-    # Sanity: SIGKILL takes effect near-instantly; the timeout deadline
-    # is 1s + at most one ``_ABORT_POLL_INTERVAL_S`` (50ms) jitter.
-    assert elapsed < 3.0, (
-        f"timeout supervisor should have killed the process well under "
-        f"the 3s sleep, took {elapsed:.2f}s"
+    # Sanity: the supervisor must trip the 1s deadline, not wait out the full
+    # 3s sleep. On POSIX the process-group kill closes the pipe at once, so
+    # elapsed ~1s and the pre-port ``< 3.0`` bound also proves the kill beat
+    # the sleep. On Windows, ``taskkill /T`` cannot reach the MSYS2 grandchild
+    # that ``sleep`` becomes — its Windows parent is not ``bash.exe`` — so that
+    # orphan keeps the stdout pipe open and ``communicate()`` blocks up to
+    # ``_KILL_REAP_TIMEOUT_S`` draining it: elapsed lands at ~1s + drain,
+    # indistinguishable by clock from a natural 3s completion. There the
+    # ``timed_out``/``interrupted`` assertions above carry the regression
+    # guard, and this bound only catches a supervisor that hangs past one
+    # kill-drain.
+    if sys.platform == "win32":
+        from src.tool_system.tools.bash.bash_tool import _KILL_REAP_TIMEOUT_S
+
+        max_elapsed = 1.0 + _KILL_REAP_TIMEOUT_S + 1.5
+    else:
+        max_elapsed = 3.0
+    assert elapsed < max_elapsed, (
+        f"timeout supervisor should have tripped the 1s deadline rather than "
+        f"waited out the 3s sleep; took {elapsed:.2f}s (budget "
+        f"{max_elapsed:.1f}s)"
     )
 
 
@@ -96,7 +122,7 @@ def test_run_bash_with_abort_sets_only_interrupted_on_esc(tmp_path: Path) -> Non
     threading.Thread(target=_trip_abort, daemon=True).start()
 
     result = _run_bash_with_abort(
-        ["bash", "-lc", "sleep 3; echo done"],
+        bash_argv("sleep 3; echo done"),
         cwd=str(tmp_path),
         timeout_s=30,  # well above the abort time
         abort_signal=ctrl.signal,
@@ -236,7 +262,7 @@ def test_run_bash_with_abort_natural_exit_sets_neither_flag(tmp_path: Path) -> N
     where a code change accidentally sets one of them on the happy path.
     """
     result = _run_bash_with_abort(
-        ["bash", "-lc", "echo hello"],
+        bash_argv("echo hello"),
         cwd=str(tmp_path),
         timeout_s=10,
         abort_signal=None,
@@ -251,11 +277,7 @@ def test_run_bash_with_abort_natural_exit_sets_neither_flag(tmp_path: Path) -> N
 def test_detached_descendant_does_not_discard_captured_stdout(tmp_path: Path) -> None:
     """A detached child may keep the output pipe open after Bash exits."""
     result = _run_bash_with_abort(
-        [
-            "bash",
-            "-lc",
-            "nohup sh -c 'sleep 4' >/dev/null 2>&1 & echo server-started",
-        ],
+        bash_argv("nohup sh -c 'sleep 4' >/dev/null 2>&1 & echo server-started"),
         cwd=str(tmp_path),
         timeout_s=10,
         abort_signal=None,

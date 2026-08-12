@@ -93,7 +93,21 @@ jobs:
         run: npm run typecheck
 
       - name: Unit tests (ui + electron projects)
-        run: npx vitest run
+        # junit output feeds the same "Test Results" publisher as the pytest
+        # legs (test-results.yml globs every artifact for *.xml), because the
+        # desktop job's failures are otherwise invisible from outside: job
+        # LOGS need an authenticated API call, artifacts do not — and this
+        # job spent its first days red on windows-latest with nothing but a
+        # ✗ to diagnose from.
+        run: npx vitest run --reporter=default --reporter=junit --outputFile.junit=test-results/desktop.xml
+
+      - name: Upload test results
+        if: (!cancelled())
+        uses: actions/upload-artifact@v4
+        with:
+          name: Test Results (Desktop, ${{ matrix.os }})
+          path: ui-desktop/test-results/*.xml
+          retention-days: 3
 
   harbor-adapter:
     # The harbor eval adapter (eval/harbor/clawcodex_agent.py) cannot be

@@ -927,7 +927,17 @@ def activate_conditional_skills_for_paths(
     # the work for each conditional skill. Filter invalid entries here.
     rel_paths: list[str] = []
     for file_path in file_paths:
-        rel_path = os.path.relpath(file_path, cwd)
+        try:
+            rel_path = os.path.relpath(file_path, cwd)
+        except ValueError:
+            # Windows raises ValueError from relpath when file_path and cwd
+            # live on different drives (e.g. an absolute path like
+            # ``C:\\etc\\passwd`` measured against a ``D:`` workspace, or the
+            # POSIX-looking ``/etc/passwd`` that resolves onto the process's
+            # current drive). A path we cannot express relative to cwd is by
+            # definition outside it — skip it, same as the ``..``/absolute
+            # guards below. (POSIX never raises here, so this is Windows-only.)
+            continue
         if not rel_path or rel_path.startswith("..") or os.path.isabs(rel_path):
             continue
         rel_paths.append(rel_path)

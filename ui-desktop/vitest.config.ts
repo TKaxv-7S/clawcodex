@@ -23,7 +23,14 @@ const electronNative: TestProjectConfiguration = {
   test: {
     name: 'electron',
     environment: 'node',
-    include: ['electron/**/*.test.ts', 'scripts/**.test.{ts,mjs}']
+    include: ['electron/**/*.test.ts', 'scripts/**.test.{ts,mjs}'],
+    // Same measure as the ui project above, and this project needs it more:
+    // these tests shell out for real (git clone/worktree fixtures, spawned
+    // node helpers), and Windows pays ~10x POSIX for process spawn plus a
+    // Defender scan per spawned exe — a 2-core windows-latest runner blows
+    // the 5s default on work that takes well under a second locally. A
+    // genuinely hung test still dies, at 30s.
+    testTimeout: 30_000
   }
 }
 

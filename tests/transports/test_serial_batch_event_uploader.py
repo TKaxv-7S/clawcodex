@@ -354,38 +354,54 @@ async def test_flush_during_failure_retries_resolves_after_success() -> None:
 
 @pytest.mark.asyncio
 async def test_failure_retries_with_exponential_backoff() -> None:
-    """Successive failures should produce increasing delays. Measured
-    via gaps between send-call timestamps."""
-    call_times_ms: list[float] = []
+    """Successive failures schedule exponentially increasing backoff delays.
+
+    Asserts on the delay values the uploader actually schedules — captured by
+    wrapping ``_sleep`` — rather than on wall-clock gaps between send calls.
+    The wall-clock approach measured real ``asyncio`` sleeps, and on the
+    Windows CI runner their resolution (~15.6ms default timer granularity)
+    plus scheduling stalls on a loaded runner pushed the tight lower bounds
+    (a 75ms floor under an 80ms delay) and the monotonicity check below their
+    margins — a Windows-only flake. Capturing the scheduled ms is
+    deterministic and OS-independent while still pinning the exact 20/40/80
+    exponential schedule (and, unlike a lower-bound check, catches a delay
+    that is too *long* too).
+    """
+    sent = 0
     fail_until = 4  # succeed on the 4th attempt
 
     async def send(batch):
-        call_times_ms.append(time.monotonic() * 1000)
-        if len(call_times_ms) < fail_until:
+        nonlocal sent
+        sent += 1
+        if sent < fail_until:
             raise RuntimeError('transient')
 
     u = SerialBatchEventUploader(_make_config(
         send,
         base_delay_ms=20.0,
         max_delay_ms=200.0,
-        jitter_ms=0.0,  # zero jitter for deterministic measurement
+        jitter_ms=0.0,  # zero jitter → exact, deterministic delays
     ))
+
+    # Capture each backoff delay the drain loop schedules, without actually
+    # waiting it out — keeps the test instant and immune to runner timer
+    # resolution / load. ``_sleep`` is called as ``self._sleep(ms)``, so an
+    # instance attribute shadows the method cleanly.
+    delays_ms: list[float] = []
+
+    async def _capture_sleep(ms: float) -> None:
+        delays_ms.append(ms)
+        await asyncio.sleep(0)  # yield to the loop; don't burn the real delay
+
+    u._sleep = _capture_sleep  # type: ignore[assignment,method-assign]
+
     await u.enqueue({'id': 1})
     await u.flush()
-    assert len(call_times_ms) == fail_until
-    # Gap[i] = delay between attempt i and i+1.
-    gaps = [
-        call_times_ms[i+1] - call_times_ms[i]
-        for i in range(len(call_times_ms) - 1)
-    ]
-    # base=20, attempts 1/2/3 → delays 20/40/80 ms (zero jitter).
-    # Tolerate event-loop scheduling slop.
-    assert gaps[0] >= 15.0, f'first retry gap too short: {gaps[0]}ms'
-    assert gaps[1] >= 35.0, f'second retry gap too short: {gaps[1]}ms'
-    assert gaps[2] >= 75.0, f'third retry gap too short: {gaps[2]}ms'
-    # And monotonically non-decreasing (within scheduling noise).
-    assert gaps[1] > gaps[0] - 10
-    assert gaps[2] > gaps[1] - 10
+
+    assert sent == fail_until
+    # failures 1/2/3 → base * 2^(failures-1) = 20/40/80 ms (zero jitter, all
+    # under the 200ms cap).
+    assert delays_ms == [20.0, 40.0, 80.0], delays_ms
 
 
 @pytest.mark.asyncio
