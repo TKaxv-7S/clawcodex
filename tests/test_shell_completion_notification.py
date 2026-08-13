@@ -126,12 +126,29 @@ class TestSpawnReapIntegration:
     """critic #4: a REAL spawn_background_bash → reap → notification, not just
     the unit builder."""
 
-    def test_bg_bash_completion_notifies_the_model(self, tmp_path):
+    def test_bg_bash_completion_notifies_the_model(self, tmp_path, monkeypatch):
         import time
         from pathlib import Path
 
+        import src.utils.task_notification as tn
         from src.tool_system.context import ToolContext, ToolUseOptions
         from src.tool_system.tools.bash.background import spawn_background_bash
+
+        # Observe delivery at the enqueue call, not by polling the global
+        # queue: the queue is process-global and anything else alive in the
+        # process may legitimately drain it (the agent-server worker loop —
+        # exercised by tests/server/*, which run earlier — consumes exactly
+        # this mode). CI run 31579051653 lost the race that way: the reaper
+        # delivered, but 100 peek() polls saw only an already-drained queue.
+        # The spy records AND forwards, so the production path stays intact.
+        delivered = []
+        real_enqueue = tn.enqueue_pending_notification
+
+        def _spy(*, value, mode="task-notification"):
+            delivered.append(value)
+            return real_enqueue(value=value, mode=mode)
+
+        monkeypatch.setattr(tn, "enqueue_pending_notification", _spy)
 
         clear_pending_notifications()
         ctx = ToolContext(workspace_root=tmp_path)
@@ -141,15 +158,21 @@ class TestSpawnReapIntegration:
             description="quick fail", context=ctx,
         )
         task_id = out["backgroundTaskId"]
-        # wait for the reap thread to deliver
-        for _ in range(100):
-            if peek_pending_notifications():
+        # Wait for the reap thread to deliver. Deadline-based and generous:
+        # a loaded 2-core runner can stall a bash spawn well past a flat 5s.
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline:
+            if delivered:
                 break
-            time.sleep(0.05)
-        q = peek_pending_notifications()
-        assert q, "no completion notification delivered"
-        joined = "\n".join(str(n) for n in q)
+            time.sleep(0.02)
+        assert delivered, "no completion notification delivered"
+        joined = "\n".join(delivered)
         assert 'Background command "quick fail" failed with exit code 3' in joined
+        # The check-and-set committed before the enqueue: the registry state
+        # must show notified=True (and the terminal facts the envelope claims).
+        st = ctx.runtime_tasks.get(task_id)
+        assert st is not None and st.notified is True
+        assert st.status == "failed" and st.exit_code == 3
         clear_pending_notifications()
 
 

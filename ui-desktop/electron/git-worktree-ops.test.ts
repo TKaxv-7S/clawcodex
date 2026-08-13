@@ -109,7 +109,13 @@ test('listBranches: lists locals and flags the checked-out branch', async () => 
     // The repo's own checkout is flagged; the unused branch is convertible.
     assert.equal(branches.find(b => b.name === current).checkedOut, true)
     assert.equal(branches.find(b => b.name === current).isDefault, true)
-    assert.equal(fs.realpathSync(branches.find(b => b.name === current).worktreePath), fs.realpathSync(dir))
+    // realpathSync.native, not realpathSync: git reports canonical long paths,
+    // while the runner's TEMP is an 8.3 short name (C:\Users\RUNNER~1\…) that
+    // only the native variant (GetFinalPathNameByHandle) expands to match.
+    assert.equal(
+      fs.realpathSync.native(branches.find(b => b.name === current).worktreePath),
+      fs.realpathSync.native(dir)
+    )
     assert.equal(branches.find(b => b.name === 'feature').checkedOut, false)
     assert.equal(branches.find(b => b.name === 'feature').isDefault, false)
     assert.equal(branches.find(b => b.name === 'feature').worktreePath, null)
@@ -210,7 +216,8 @@ test('addWorktree: existing default branch switches the main checkout, not .work
     const result = await addWorktree(dir, { existingBranch: trunk }, 'git')
 
     assert.equal(result.branch, trunk)
-    assert.equal(fs.realpathSync(result.path), fs.realpathSync(dir))
+    // native: expands 8.3 short names (see the listBranches locals test).
+    assert.equal(fs.realpathSync.native(result.path), fs.realpathSync.native(dir))
     assert.equal(git('branch', '--show-current'), trunk)
     assert.equal(fs.existsSync(path.join(dir, '.worktrees', trunk)), false)
   } finally {
@@ -433,7 +440,7 @@ test('addWorktree: a remote default branch gets its own worktree, not a home swi
     // "switch home" applies to a local default branch. A remote ref always gets
     // a new worktree, so the main checkout stays where the user put it.
     assert.equal(result.branch, 'main')
-    assert.notEqual(fs.realpathSync(result.path), fs.realpathSync(cloneDir))
+    assert.notEqual(fs.realpathSync.native(result.path), fs.realpathSync.native(cloneDir))
     assert.equal(git('branch', '--show-current'), 'rawr')
   } finally {
     fs.rmSync(remoteDir, { recursive: true, force: true })
