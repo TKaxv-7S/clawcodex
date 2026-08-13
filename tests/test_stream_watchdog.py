@@ -24,6 +24,27 @@ from src.utils.stream_watchdog import (
 )
 
 
+def _await_fire(watchdog: StreamWatchdog, response: MagicMock, timeout: float = 5.0) -> None:
+    """Wait (bounded) until the watchdog has fired AND closed the response.
+
+    ``_on_timeout`` sets ``fired`` under the lock but closes the response
+    after releasing it, so there is a real window where ``fired`` is True
+    and ``close()`` hasn't happened yet — that ordering is deliberate (the
+    consumer must be able to classify a timeout the moment it is decided).
+    A fixed ``time.sleep`` then ``close.assert_called()`` races that window
+    plus Windows' ~15.6ms timer granularity and runner scheduling stalls
+    (the observed CI flake). Polling keeps the assertion ("a fire closes
+    the response") while dropping the bet on scheduler punctuality. The
+    caller still asserts afterward, so a genuine no-fire/no-close bug fails
+    loudly at the deadline rather than hanging.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if watchdog.fired and response.close.called:
+            return
+        time.sleep(0.01)
+
+
 class TestStreamIdleTimeoutResolution(unittest.TestCase):
     """Env-var resolution for ``CLAUDE_STREAM_IDLE_TIMEOUT_MS``."""
 
@@ -202,7 +223,7 @@ class TestTwoPhaseWatchdog(unittest.TestCase):
         self.assertFalse(watchdog.fired, "must not fire during first-event grace")
         resp.close.assert_not_called()
         watchdog.reset()  # first event arrived → tighten to inter-event
-        time.sleep(0.25)  # past inter-event now
+        _await_fire(watchdog, resp)  # inter-event idle lapses
         self.assertTrue(watchdog.fired, "must fire on inter-event idle after start")
         resp.close.assert_called()
         watchdog.disarm()
@@ -217,7 +238,7 @@ class TestTwoPhaseWatchdog(unittest.TestCase):
             stream, timeout_s=0.1, first_event_timeout_s=0.2
         )
         watchdog.arm()
-        time.sleep(0.35)  # never any event; first-event grace lapses
+        _await_fire(watchdog, resp)  # never any event; first-event grace lapses
         self.assertTrue(watchdog.fired)
         resp.close.assert_called()
         watchdog.disarm()
@@ -246,8 +267,12 @@ class TestPingAwareLiveness(unittest.TestCase):
             response.num_bytes_downloaded += 128
         self.assertFalse(watchdog.fired, "byte progress must re-arm, not fire")
         response.close.assert_not_called()
-        # Once bytes stop, the next deadline fires.
-        time.sleep(0.2)
+        # Once bytes stop, the next deadline fires. Polled, not slept: the
+        # last byte bump re-arms one more ~0.08s deadline, and a fixed 0.2s
+        # sleep left <0.1s margin for the timer thread on a loaded runner —
+        # plus the fired-vs-close window (see _await_fire) — the exact
+        # windows-latest CI failure ("Expected 'close' to have been called").
+        _await_fire(watchdog, response)
         self.assertTrue(watchdog.fired)
         response.close.assert_called()
         watchdog.disarm()
@@ -263,7 +288,7 @@ class TestPingAwareLiveness(unittest.TestCase):
             stream, timeout_s=0.08, first_event_timeout_s=0.08
         )
         watchdog.arm()
-        time.sleep(0.25)
+        _await_fire(watchdog, response)
         self.assertTrue(watchdog.fired)
         response.close.assert_called()
         watchdog.disarm()

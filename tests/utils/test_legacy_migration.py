@@ -224,7 +224,12 @@ def test_user_migration_preserves_symlinks_as_symlinks(fake_home):
     assert report is not None and "skills/linked" in report.copied
     copied_link = fake_home / ".clawcodex" / "skills" / "linked" / "ref.txt"
     assert copied_link.is_symlink()
-    assert os.readlink(copied_link) == str(target)
+    # os.readlink on Windows can return an absolute target with a ``\\?\``
+    # extended-length prefix, so a literal ``== str(target)`` compare is a
+    # Windows-only false failure. Resolve both sides instead: the copied entry
+    # must still be a symlink (preserved, not dereferenced into a file copy)
+    # that points at the same real target.
+    assert copied_link.resolve() == target.resolve()
 
 
 # ---------------------------------------------------------------------------

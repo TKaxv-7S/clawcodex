@@ -30,7 +30,19 @@ classifiers = [
 
 dependencies = [
     "anthropic>=0.116.0",
-    "openai>=1.109.1",
+    # Capped below 3.0 deliberately. openai 3.0.0 (2026-08-12) is the HTTPX2
+    # migration: the SDK's default transport became httpx2 (httpx is no
+    # longer even a dependency), and requests silently stop flowing through
+    # the httpx layer we are coupled to on both sides of the SDK boundary —
+    # verified against 3.0.0: a ``chat()`` under a patched ``httpx.Client.
+    # send`` sails straight past it onto the real network. Concretely broken:
+    # ``http_client=httpx.Client(verify=False)`` (openai/zai/openrouter/
+    # deepseek + the spec registry's TLS-verify escape hatch) no longer
+    # carries the transport, and ``src/providers/_stream_abort.py`` closes
+    # the httpx ``Response`` behind SDK streams to break blocked reads —
+    # internals httpx2 streams do not expose. Lift only with an httpx2
+    # migration of the above (SDK guide: openai-python httpx2.md).
+    "openai>=1.109.1,<3",
     "python-dotenv>=1.2.2",
     "rich>=13.9.4",
     "prompt-toolkit>=3.0.52",

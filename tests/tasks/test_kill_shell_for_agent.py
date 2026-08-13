@@ -20,8 +20,19 @@ from src.tasks.local_shell import (
 
 
 def _spawn(cmd: str) -> subprocess.Popen:
+    # Resolve bash and the process-group kwargs the way production does. A bare
+    # ``["bash", ...]`` resolves via PATH, and on the Windows CI runner PATH's
+    # first ``bash.exe`` is the WSL launcher (``C:\Windows\System32\bash.exe``),
+    # which exits immediately with no distro installed — so a ``sleep 30`` here
+    # would be dead on arrival and the "still running / untouched" assertions
+    # would fail on Windows only. ``bash_argv`` resolves Git Bash explicitly;
+    # ``popen_tree_kwargs`` supplies ``start_new_session`` on POSIX and
+    # ``CREATE_NEW_PROCESS_GROUP`` on Windows (a bare ``start_new_session=True``
+    # is POSIX-only), matching how the real spawner makes a killable tree.
+    from src.utils.shell_platform import bash_argv, popen_tree_kwargs
+
     return subprocess.Popen(
-        ["bash", "-lc", cmd], stdin=subprocess.DEVNULL, start_new_session=True
+        bash_argv(cmd), stdin=subprocess.DEVNULL, **popen_tree_kwargs()
     )
 
 

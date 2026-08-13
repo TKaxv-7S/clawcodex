@@ -98,26 +98,47 @@ class TestBashReaperMakesEligible(unittest.TestCase):
 
     def test_reaper_terminal_state_is_eligible(self):
         import subprocess
+        import tempfile
         import time
 
         from src.tasks.eviction import is_eligible_for_eviction
         from src.tool_system.context import ToolContext
         from src.tool_system.tools.bash.background import spawn_background_bash
 
-        ctx = ToolContext(workspace_root=Path("/tmp"))
+        # A real directory on every platform. ``Path("/tmp")`` reaches Popen's
+        # ``cwd=`` as the drive-relative ``\tmp`` on Windows, and the CI runner
+        # has no ``C:\tmp`` — spawn dies with NotADirectoryError (WinError 267)
+        # before the reaper is ever exercised. (Machines where ``C:\tmp``
+        # happens to exist hid this locally.)
+        tmp = Path(tempfile.gettempdir())
+        ctx = ToolContext(workspace_root=tmp)
         # A command that exits immediately.
         result = spawn_background_bash(
-            command="true", cwd=Path("/tmp"), description="t", context=ctx,
+            command="true", cwd=tmp, description="t", context=ctx,
         )
         task_id = result["backgroundTaskId"]
-        # Wait for the reaper daemon to flip the state terminal.
-        deadline = time.time() + 5.0
+        # Wait for the reaper daemon to flip the state terminal AND deliver the
+        # completion notification. The reaper does this in two separate registry
+        # updates: _patch sets the terminal status + evict_after (schedule_
+        # eviction), then enqueue_shell_notification sets notified=True. Breaking
+        # on the terminal status alone races that second update — on a loaded
+        # runner the loop can snapshot the state in the window where status is
+        # terminal but notified is still False, then fail assertTrue(notified)
+        # on that stale snapshot (flaky in a batch run, fine in isolation). Wait
+        # for notified, which the reaper sets last and which implies the
+        # terminal status + evict_after were already set.
+        deadline = time.time() + 10.0
         state = None
         while time.time() < deadline:
             state = ctx.runtime_tasks.get(task_id)
-            if state is not None and state.status in ("completed", "failed"):
+            if (
+                state is not None
+                and state.status in ("completed", "failed")
+                and state.notified
+                and state.evict_after is not None
+            ):
                 break
-            time.sleep(0.05)
+            time.sleep(0.02)
         self.assertIsNotNone(state)
         self.assertIn(state.status, ("completed", "failed"))
         # The reaper set notified + evict_after (WI-2), so it is eligible
