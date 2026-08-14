@@ -9,6 +9,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **ClawCodex Web — the agent in a browser tab (`ui-web/`, `clawcodex web`).**
+  A third front end on the existing backend: three-column shell (session tree
+  | conversation | details) with drag-resizable columns and a concession chain
+  that protects the reading column, streaming replies with collapsible
+  reasoning, live tool cards (terminal transcript, unified diff,
+  line-numbered file window, generic output), permission approvals as a
+  composer takeover, a prompt queue for follow-ups typed mid-turn, a context
+  meter with per-category breakdown, slash-command completion, session resume
+  from the sidebar, and light/dark/system themes.
+
+  It carries two views. **Chat** is the conversation. **Trajectory** is the
+  same run as a metered ledger: every model request and tool call in order, a
+  three-lane timeline (input / model / tools) that switches between
+  equal-width operations and real elapsed durations, per-step tokens and
+  timing (TTFT, generation, throughput, cache-hit rate), and an inspector with
+  Summary / Preview / Raw. Model time and tool time are reported separately —
+  "41s" is not actionable, "41s of model, 22s of tools" says which half to go
+  look at.
+
+  Making that honest needed per-request data the gateway was discarding:
+  `_sdk_envelope` now carries the `usage`/`model`/`stop_reason` it already
+  computed, and the gateway translates them into a `step.complete` event
+  (`result` only ever reported whole-turn totals, so a ten-request turn and a
+  one-request turn were indistinguishable). Both changes are additive — a
+  message without those fields produces exactly the envelope it always did.
+
+  It is deliberately **not** a second server. `clawcodex web` is
+  `clawcodex serve` with the built `ui-web/dist` mounted on it, so a browser
+  drives the same in-process agent, the same JSON-RPC gateway (`/api/ws`), and
+  the same durable sessions as the TUI and the desktop app. The backend change
+  is additive and gated: with no bundle built, `serve` is byte-for-byte the
+  desktop backend it has always been. The whole coupling to the protocol lives
+  in four client files (wire types, socket client, tool-name vocabulary, and a
+  pure events→nodes reducer), so the UI above them knows nothing about
+  JSON-RPC.
+
+  `GET /` inlines the session token (the same `__CLAWCODEX_SESSION_TOKEN__`
+  global the desktop shell already scrapes) because a browser has no other way
+  to learn it — so `clawcodex web` refuses a non-loopback `--host` unless
+  `--allow-remote` is passed. Visual design and several structural ideas are
+  adapted from the MIT-licensed DeepSeek Harness web client; see
+  `ui-web/README.md`.
+
 - **Native Windows support for the CLI.** ClawCodex now runs first-class on
   Windows 10/11 — PowerShell, cmd, and Windows Terminal — with no WSL
   required. The port follows the playbook of a reference Windows-supporting
