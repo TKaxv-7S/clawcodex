@@ -389,12 +389,23 @@ class Clawcodex(BaseInstalledAgent):
         advisor: str | None = None,
         advisor_effort: str | None = None,
         vision: str | None = None,
+        nano: bool | str = False,
         *args,
         **kwargs,
     ):
         from harbor.utils.env import parse_bool_env_value
 
         self._subscription = parse_bool_env_value(subscription, name="subscription")
+        # ``--ak nano=1`` — run clawcodex in nano mode (pi-shaped minimal
+        # profile: six tools, ~2K-token fixed payload, byte-stable context,
+        # eco on). A constructor kwarg rather than a CLI_FLAGS entry because
+        # CLI_FLAGS emits ``--flag value`` pairs and ``--nano`` is a bare
+        # store_true flag. Harbor parses ``--ak nano=1`` to the int 1, which
+        # parse_bool_env_value rejects — stringify non-bools first.
+        self._nano = (
+            nano if isinstance(nano, bool)
+            else parse_bool_env_value(str(nano).lower(), name="nano")
+        )
         self._source = source
         # A ``source`` that resolves to a real file on the host is a
         # working-tree build to upload rather than a spec for uv to resolve
@@ -896,6 +907,8 @@ class Clawcodex(BaseInstalledAgent):
             parts += ["--model", shlex.quote(self._parsed_model_name)]
         if self._parsed_model_provider:
             parts += ["--provider", shlex.quote(self._parsed_model_provider)]
+        if self._nano:
+            parts.append("--nano")
 
         # NOTE: build_cli_flags() output is NOT shell-quoted by the base
         # class — safe while every CLI_FLAGS entry is int/enum-typed; quote

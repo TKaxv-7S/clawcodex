@@ -73,6 +73,23 @@ ClawCodex keeps your request prefix **byte-stable**, so DeepSeek's prompt cache 
 
 ***
 
+<div align="center">
+
+# 🐜 `--nano` Mode
+
+# The pi-style minimal harness, built in
+
+### Terminal-Bench 2.1 A/B (`fix-git` + `pypi-server`), same model, same wheel, one flag apart: **2/2 solved in both modes** — nano at **$0.0042 vs $0.0186 total (4.4× cheaper)**, up to 5.2× less input, faster on both.
+
+Six tools, a **~2K-token** fixed payload (vs ~16K default), zero per-turn injections, /eco on.
+`clawcodex --nano -p "<task>"` ports the pi harness's edit ladder (multi-edit + fuzzy match),
+truncation guard, and compaction file-ledger — while non-nano behavior stays byte-identical.
+**[docs/nano.md](docs/nano.md)**
+
+</div>
+
+***
+
 ## ⚡ Quick Install
 
 **One line** — installs `uv`, Python 3.10+, and puts `clawcodex` on your PATH.
