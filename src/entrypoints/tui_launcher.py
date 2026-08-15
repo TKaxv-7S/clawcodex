@@ -87,6 +87,11 @@ def run_tui_launcher(argv: list[str]) -> int:
                         help="Path to the ui-tui client (default: auto-detect).")
     parser.add_argument("--print-connect", action="store_true",
                         help="Run the agent-server directly, print cc:// URL + token, and wait (no TUI).")
+    parser.add_argument(
+        "--nano", action="store_true",
+        help="Nano mode: six tools, pi-style minimal prompt, byte-stable "
+             "context, /eco on, no MCP (docs/nano.md).",
+    )
     args = parser.parse_args(argv)
 
     # ch08 round-4 WI-3 — 'bubble' is a runtime-only sub-agent-escalation
@@ -184,6 +189,7 @@ def launch_ink_tui(
     workspace: str | None = None,
     tui_dir: str | None = None,
     worktree=None,
+    nano: bool = False,
 ) -> int:
     """Launch the Ink TUI as the interactive UI (it spawns + owns the agent-server).
 
@@ -216,6 +222,7 @@ def launch_ink_tui(
         tui_dir=tui_dir,
         print_connect=False,
         worktree_session=worktree,
+        nano=nano,
     )
     try:
         return asyncio.run(_launch(args))
@@ -287,6 +294,10 @@ def _agent_server_cmd(args) -> list[str]:
         cmd += ["--model", args.model]
     if getattr(args, "effort", None):
         cmd += ["--effort", args.effort]
+    if getattr(args, "nano", False):
+        # Nano mode (docs/nano.md) — the backend owns registry + prompt, so
+        # the flag rides the agent-server command, not the Ink client's env.
+        cmd += ["--nano"]
     return cmd
 
 
@@ -347,6 +358,7 @@ def _print_connect(args) -> int:
         *(["--provider", args.provider] if args.provider else []),
         *(["--model", args.model] if args.model else []),
         *(["--effort", args.effort] if getattr(args, "effort", None) else []),
+        *(["--nano"] if getattr(args, "nano", False) else []),
         "--workspace", workspace,
     ])
 

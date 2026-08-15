@@ -194,19 +194,6 @@ def main():
     )
     profile_checkpoint("phase3_end_phase4_start")
 
-    if getattr(args, 'nano', False) and not args.print:
-        # Refuse rather than silently launching the maximal TUI: a user who
-        # asked for nano must never be handed the 17K-token surface by
-        # accident. Interactive nano lands in a follow-up PR.
-        from src.cli_core.exit import cli_error
-
-        cli_error(
-            "error: --nano currently requires -p/--print (headless). "
-            "Interactive nano mode is planned; for now run: "
-            "clawcodex --nano -p \"<prompt>\"",
-            2,
-        )
-
     if args.print:
         profile_checkpoint("mode_dispatch_print")
         # ``phase4_dispatch``: launcher has chosen a mode and is about
@@ -257,6 +244,9 @@ def main():
         bypass_selectable=args._resolved_bypass_selectable,
         workspace=(worktree_session.worktree_path if worktree_session else None),
         worktree=worktree_session,
+        # Nano rides the agent-server command (tui_launcher._agent_server_cmd)
+        # so the backend builds the nano registry + prompt before any turn.
+        nano=bool(getattr(args, 'nano', False)),
     )
 
 
@@ -540,18 +530,17 @@ Examples:
     )
 
     # ---- Nano mode ----
-    # pi-shaped minimal profile (see src/nano/): six tools (Read, Bash,
-    # Edit, Write, Grep, Glob), a ~600-token system prompt, no per-turn
-    # context injections, /eco on. Top-level because it will eventually
-    # apply to every surface; v1 wires the headless (-p) path only and
-    # errors otherwise rather than silently running maximal.
+    # pi-shaped minimal profile (see src/nano/, docs/nano.md): six tools
+    # (Read, Bash, Edit, Write, Grep, Glob), a ~300-token system prompt, no
+    # per-turn context injections, /eco on. Applies to headless (-p) and the
+    # interactive TUI (forwarded to the agent-server child via --nano).
     parser.add_argument(
         '--nano',
         action='store_true',
         help=(
             'Nano mode: minimal pi-style harness profile — six tools, tiny '
-            'system prompt, byte-stable context, eco compression on. '
-            'Currently requires -p/--print (headless).'
+            'system prompt, byte-stable context, eco compression on. Works '
+            'headless (-p) and in the interactive TUI.'
         ),
     )
 
