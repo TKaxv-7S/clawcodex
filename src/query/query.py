@@ -19,6 +19,7 @@ from ..types.messages import (
     SystemMessage,
     UserMessage,
     create_assistant_api_error_message,
+    create_user_message,
 )
 from ..types.content_blocks import TextBlock, ToolResultBlock, ToolUseBlock
 from ..tool_system.build_tool import Tool, Tools
@@ -2600,7 +2601,23 @@ async def query(
             set_terminal(holder, natural_termination, Terminal(reason="completed"))
             return
 
-        for block in tool_use_blocks:
+        # pi's truncation guard, nano-gated (pi agent-loop.ts:381-406): a
+        # "max_tokens" response was cut mid-generation, so every tool call
+        # it carries may have silently truncated arguments — streamed JSON
+        # is salvage-parsed, so a truncated Write/Edit can look valid while
+        # its content is incomplete. Fail them all without executing; the
+        # error text tells the model to re-issue. Non-nano keeps the
+        # documented run-the-survivors behavior (see the max_tokens
+        # tagging rationale above at _call_model_sync).
+        from src.nano.state import is_nano_mode as _is_nano_mode
+
+        _nano_fail_truncated = _is_nano_mode() and any(
+            getattr(m, "stop_reason", None) == "max_tokens"
+            for m in assistant_messages
+        )
+        _blocks_to_run = [] if _nano_fail_truncated else tool_use_blocks
+
+        for block in _blocks_to_run:
             yield SystemMessage(
                 content=f"Running tool: {block.name}",
                 subtype="tool_use_progress",
@@ -2651,8 +2668,29 @@ async def query(
         can_use_tool = build_can_use_tool(tool_use_context)
         tool_results: list[UserMessage] = []
         hook_stopped = False
+        if _nano_fail_truncated:
+            # Synthesize one error result per un-executed call so tool_use/
+            # tool_result pairing stays intact and the model can re-issue.
+            for block in tool_use_blocks:
+                _guard_text = (
+                    f'<tool_use_error>Tool call "{block.name}" was not '
+                    "executed: the response hit the output token limit, so "
+                    "its arguments may be truncated. Re-issue the tool call "
+                    "with complete arguments.</tool_use_error>"
+                )
+                _guard_msg = create_user_message(
+                    content=[{
+                        "type": "tool_result",
+                        "content": _guard_text,
+                        "is_error": True,
+                        "tool_use_id": block.id,
+                    }],
+                    toolUseResult=_guard_text,
+                )
+                yield _guard_msg
+                tool_results.append(_guard_msg)
         async for update in run_tools(
-            tool_use_blocks,
+            _blocks_to_run,
             assistant_messages,
             can_use_tool,
             tool_use_context,
