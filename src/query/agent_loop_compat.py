@@ -180,6 +180,7 @@ def build_effective_system_prompt(
     provider: Any | None = None,
     mcp_servers: list[Any] | None = None,
     query_source: str = "main",
+    nano_tool_names: tuple[str, ...] | None = None,
 ) -> list[dict[str, Any]]:
     """Assemble the cold-start system prompt for the headless+TUI cutover.
 
@@ -238,6 +239,33 @@ def build_effective_system_prompt(
     from ..coordinator.mode import is_coordinator_mode
 
     cwd = str(tool_context.cwd or tool_context.workspace_root)
+
+    # Nano mode REPLACES the entire base block set with the pi-shaped
+    # minimal prompt (same replace-not-extend pattern as the coordinator
+    # branch below; nano+coordinator is unsupported and nano wins). The
+    # nano builder owns context files (CLAWCODEX.md with AGENTS.md/CLAUDE.md
+    # fallback) and deliberately emits NO git/workspace snapshot, so the
+    # whole prompt is one session-stable cached prefix — return early
+    # rather than falling through to the trailing context blocks.
+    from src.nano.state import is_nano_mode
+
+    if is_nano_mode():
+        from src.nano.prompt import build_nano_prompt_blocks
+
+        return build_nano_prompt_blocks(
+            cwd=cwd,
+            workspace_root=tool_context.workspace_root,
+            tool_names=nano_tool_names,
+            non_interactive=bool(
+                getattr(
+                    getattr(tool_context, "options", None),
+                    "is_non_interactive_session",
+                    False,
+                )
+            ),
+            style_prompt=style_prompt,
+            query_source=query_source,
+        )
 
     coordinator = is_coordinator_mode()
     if coordinator:
@@ -577,12 +605,21 @@ async def run_query_as_agent_loop(
     # failure. Ephemeral: appended to the query's working set only, never
     # persisted to the conversation (matches TS attachments).
     messages_for_query = list(initial_messages)
+
+    # Nano mode sends a byte-stable history: none of the per-turn
+    # reminder/recall injections below fire (pi-vs-clawcodex study §3.4 —
+    # maximal cache hits, no reminder noise competing with the task). The
+    # same gate covers all four injection sites so the invariant is
+    # structural rather than per-feature.
+    from src.nano.state import is_nano_mode
+
+    _inject_reminders = memory_recall_enabled and not is_nano_mode()
     try:
         recall_msg = (
             await _maybe_recall_memories(
                 messages_for_query, provider, tool_context, memory_surfaced,
             )
-            if memory_recall_enabled else None
+            if _inject_reminders else None
         )
         if recall_msg is not None:
             messages_for_query.append(recall_msg)
@@ -595,7 +632,7 @@ async def run_query_as_agent_loop(
     # the last, append a <system-reminder> with today's date at the tail (the
     # cached prefix keeps the memoized start date, so this doesn't bust it).
     # Reuses the "real user turn" gate (memory_recall_enabled == not internal).
-    if memory_recall_enabled:
+    if _inject_reminders:
         try:
             from src.context_system.date_change import get_date_change_reminder
             from src.types.messages import create_user_message
@@ -617,7 +654,7 @@ async def run_query_as_agent_loop(
     # attachments are PERSISTED via on_attachment — TS keeps them in the
     # transcript, and both the throttle scan and the model's context across
     # turns 2..5 depend on them surviving into later turns' initial_messages.
-    if memory_recall_enabled:
+    if _inject_reminders:
         try:
             from src.context_system.plan_mode import (
                 build_plan_mode_attachments,
@@ -672,7 +709,7 @@ async def run_query_as_agent_loop(
     # the same PERSISTED delivery as the plan block above — the throttle scans
     # the transcript for the previous reminder, so it must survive into later
     # turns' initial_messages.
-    if memory_recall_enabled:
+    if _inject_reminders:
         try:
             from src.context_system.plan_mode import wrap_in_system_reminder
             from src.context_system.task_reminder import (
