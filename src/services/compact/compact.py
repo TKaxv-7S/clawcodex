@@ -455,6 +455,22 @@ async def compact_conversation(
 
     summary_text = format_compact_summary(summary_text)
 
+    # Nano: append pi's cumulative <read-files>/<modified-files> ledger so
+    # the model keeps its working set across any number of compactions
+    # (src/nano/compact_ledger.py). Path lists, not contents — a few dozen
+    # tokens of insurance. No-op (and no import) outside nano mode.
+    from src.nano.state import is_nano_mode
+
+    if is_nano_mode():
+        try:
+            from src.nano.compact_ledger import append_file_ops_ledger
+
+            summary_text = append_file_ops_ledger(
+                summary_text, messages, messages_to_compact
+            )
+        except Exception:
+            logger.debug("nano file-op ledger failed", exc_info=True)
+
     # Create boundary marker
     last_msg_uuid = None
     if messages_to_compact:

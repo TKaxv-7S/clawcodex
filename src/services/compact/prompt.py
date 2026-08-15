@@ -284,6 +284,21 @@ Please provide your summary following this structure, ensuring precision and tho
 """
 
 
+# pi's iterative-update contract (compaction.ts UPDATE_SUMMARIZATION_PROMPT),
+# adapted to clawcodex's single-call design: the previous summary is itself
+# part of the span being re-summarized, so preservation is an instruction,
+# not a separate call. Appended only in nano mode.
+NANO_ITERATIVE_ADDENDUM = (
+    "\n\nIf the conversation contains a previous context checkpoint "
+    "summary, treat it as the baseline: PRESERVE all of its information, "
+    "ADD new progress, decisions, and context from the newer messages, "
+    "move items that were completed from in-progress to done, and update "
+    "the next steps. Keep exact file paths, function names, and error "
+    "messages. Do not drop information that is still relevant merely "
+    "because it came from the previous summary."
+)
+
+
 def get_compact_prompt(
     custom_instructions: str | None = None,
     *,
@@ -291,6 +306,10 @@ def get_compact_prompt(
 ) -> str:
     """Return the full compact prompt, optionally appending user instructions."""
     prompt = NO_TOOLS_PREAMBLE + BASE_COMPACT_PROMPT
+    from src.nano.state import is_nano_mode
+
+    if is_nano_mode():
+        prompt += NANO_ITERATIVE_ADDENDUM
     if custom_instructions:
         prompt += f"\n\nAdditional Instructions:\n{custom_instructions}"
     prompt += NO_TOOLS_TRAILER
