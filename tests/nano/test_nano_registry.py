@@ -41,11 +41,17 @@ def test_no_orchestration_or_task_surface():
 
 
 def test_pi_length_docs_but_full_schemas():
+    from src.nano.edit_tool import NANO_EDIT_DOC
+
     reg = build_nano_registry()
     for t in reg.list_tools():
-        assert t.prompt() == NANO_TOOL_DOCS[t.name]
+        if t.name == "Edit":
+            # The nano Edit variant carries its own multi-edit doc.
+            assert t.prompt() == NANO_EDIT_DOC
+        else:
+            assert t.prompt() == NANO_TOOL_DOCS[t.name]
         # docs are pi-length: a few sentences, not the multi-KB defaults
-        assert len(t.prompt()) < 400
+        assert len(t.prompt()) < 500
         # schemas are untouched (parameter shape is behavioral)
         assert json.dumps(dict(t.input_schema))
 

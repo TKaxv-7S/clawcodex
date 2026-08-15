@@ -25,12 +25,9 @@ NANO_TOOL_DOCS: dict[str, str] = {
         "directory persists between commands; shell state does not. Long "
         "output is truncated. Quote paths containing spaces."
     ),
-    "Edit": (
-        "Edits a file by exact string replacement. You must Read the file "
-        "first (and it must be unchanged since). old_string must match the "
-        "file exactly — including whitespace — and be unique unless "
-        "replace_all is true; on ambiguity, add surrounding context."
-    ),
+    # Edit is intentionally absent: the nano registry swaps in
+    # NanoEditTool (src/nano/edit_tool.py), which carries its own doc for
+    # the multi-edit + fuzzy-ladder contract.
     "Write": (
         "Writes a file, overwriting any existing content. To overwrite an "
         "existing file you must Read it first. Prefer Edit for modifying "

@@ -51,8 +51,11 @@ NANO_TOOL_SNIPPETS: dict[str, str] = {
 _GUIDELINES = (
     "- Use Read to examine files instead of cat/sed/head, and Grep/Glob "
     "instead of shell grep/find",
-    "- Read a file before editing it; make old_string match the file "
+    "- Read a file before editing it; each old_string must match the file "
     "exactly, including whitespace",
+    "- When changing multiple places in one file, use ONE Edit call with "
+    "multiple entries in edits[]; keep each old_string as small as "
+    "possible while still unique, and never overlap edits",
     "- Be concise in your responses",
     "- Show file paths clearly when working with files",
 )

@@ -23,17 +23,19 @@ from dataclasses import replace
 from src.tool_system.registry import ToolRegistry
 from src.tool_system.tools import (
     BashTool,
-    EditTool,
     GlobTool,
     GrepTool,
     ReadTool,
     WriteTool,
 )
 
+from .edit_tool import NanoEditTool
 from .tool_docs import NANO_TOOL_DOCS
 
 # Order mirrors pi's system-prompt tool list (read/bash/edit/write first).
-NANO_TOOLS = (ReadTool, BashTool, EditTool, WriteTool, GrepTool, GlobTool)
+# Edit is the nano variant carrying pi's multi-edit + fuzzy ladder
+# (src/nano/edit_tool.py); it brings its own doc and schema.
+NANO_TOOLS = (ReadTool, BashTool, NanoEditTool, WriteTool, GrepTool, GlobTool)
 NANO_TOOL_NAMES: tuple[str, ...] = tuple(t.name for t in NANO_TOOLS)
 
 
