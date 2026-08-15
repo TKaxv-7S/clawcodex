@@ -175,6 +175,10 @@ class HeadlessOptions:
     disallowed_tools: tuple[str, ...] = ()
     include_partial_messages: bool = False
     verbose: bool = False
+    # ``--nano`` — pi-shaped minimal profile: six tools, ~600-token system
+    # prompt, no per-turn injections, eco on. See src/nano/ and
+    # my-docs/clawcodex-nano/nano-design.md. Default off = today's behavior.
+    nano: bool = False
 
     # Mostly for tests: override streams so we can capture output.
     stdin: IO[str] | None = None
@@ -215,6 +219,19 @@ def run_headless(options: HeadlessOptions) -> int:
     # memos are key-less and first-writer pins the content the query
     # path (which passes workspace_root) will read.
     workspace_root = options.workspace_root or Path.cwd()
+
+    if options.nano:
+        # Set the process-wide mode BEFORE any prompt/registry construction
+        # so every chokepoint (build_effective_system_prompt, the reminder
+        # gates in run_query_as_agent_loop) observes it. Eco rides along:
+        # nano is the slim/fast/eco profile, and eco's never-worse guard
+        # makes default-on safe (src/eco/guard.py).
+        from src.eco.state import set_eco_session
+        from src.nano.state import set_nano_mode
+
+        set_nano_mode(True)
+        set_eco_session(True)
+
     from src.deferred_init import start_deferred_prefetches
 
     start_deferred_prefetches(cwd=str(workspace_root))
@@ -304,7 +321,17 @@ def run_headless(options: HeadlessOptions) -> int:
 
     session = Session.create(provider_name, getattr(provider, "model", model or ""))
 
-    tool_registry = build_default_registry(provider=provider)
+    if options.nano:
+        # Nano: exactly six tools, none deferred (src/nano/registry.py) —
+        # no Agent/Task/Skill/ToolSearch/MCP surface at all. The
+        # ``remove_tool`` calls below are harmless no-ops on this registry
+        # (none of the removed tools are registered); they stay
+        # unconditional so the default branch below remains byte-identical.
+        from src.nano.registry import build_nano_registry
+
+        tool_registry = build_nano_registry()
+    else:
+        tool_registry = build_default_registry(provider=provider)
     # AskUserQuestion cannot work here: headless has no terminal, and no
     # surface routes questions back to a client (``ask_user`` below is
     # unconditionally stubbed). Leaving it REGISTERED but stubbed meant the
@@ -697,6 +724,16 @@ def run_headless(options: HeadlessOptions) -> int:
                         effective_system_prompt = (
                             build_effective_system_prompt(
                                 _style_prompt, tool_context, provider=provider,
+                                # Nano: the prompt's tool listing tracks the
+                                # live registry (an allow/deny-filtered tool
+                                # drops off the listing too).
+                                nano_tool_names=(
+                                    tuple(
+                                        t.name
+                                        for t in tool_registry.list_tools()
+                                    )
+                                    if options.nano else None
+                                ),
                             )
                         )
 

@@ -1,0 +1,60 @@
+"""Nano registry invariants — the surface IS the contract."""
+
+from __future__ import annotations
+
+import json
+
+from src.nano.registry import NANO_TOOL_NAMES, build_nano_registry
+from src.nano.tool_docs import NANO_TOOL_DOCS
+from src.tool_system.defaults import build_default_registry
+from src.tool_system.tools import BashTool
+
+
+def test_exactly_six_tools_in_pi_order():
+    reg = build_nano_registry()
+    assert [t.name for t in reg.list_tools()] == [
+        "Read", "Bash", "Edit", "Write", "Grep", "Glob",
+    ]
+    assert NANO_TOOL_NAMES == ("Read", "Bash", "Edit", "Write", "Grep", "Glob")
+
+
+def test_nothing_deferred_so_no_deferred_tools_message():
+    # query.py:1024 emits the cache-busting <available-deferred-tools>
+    # first-user-message only for deferred-or-disabled registered tools;
+    # nano must never have any.
+    reg = build_nano_registry()
+    assert [t.name for t in reg.list_tools() if t.should_defer] == []
+    for t in reg.list_tools():
+        assert t.is_enabled()
+
+
+def test_no_orchestration_or_task_surface():
+    reg = build_nano_registry()
+    names = {t.name for t in reg.list_tools()}
+    for absent in (
+        "Agent", "Workflow", "TaskCreate", "TaskUpdate", "TaskList",
+        "TaskGet", "TaskOutput", "TaskStop", "ToolSearch", "Skill",
+        "AskUserQuestion", "EnterPlanMode", "ExitPlanMode", "SendMessage",
+        "CronCreate", "WebFetch", "WebSearch", "TodoWrite", "Memory",
+    ):
+        assert absent not in names
+
+
+def test_pi_length_docs_but_full_schemas():
+    reg = build_nano_registry()
+    for t in reg.list_tools():
+        assert t.prompt() == NANO_TOOL_DOCS[t.name]
+        # docs are pi-length: a few sentences, not the multi-KB defaults
+        assert len(t.prompt()) < 400
+        # schemas are untouched (parameter shape is behavioral)
+        assert json.dumps(dict(t.input_schema))
+
+
+def test_default_registry_instances_untouched():
+    # The nano registry carries copies; the shared static instances (and
+    # therefore the default registry) must keep their full docs.
+    build_nano_registry()
+    assert len(BashTool.prompt()) > 1000
+    default = build_default_registry()
+    bash = next(t for t in default.all_tools() if t.name == "Bash")
+    assert len(bash.prompt()) > 1000

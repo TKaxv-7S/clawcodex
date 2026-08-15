@@ -194,6 +194,19 @@ def main():
     )
     profile_checkpoint("phase3_end_phase4_start")
 
+    if getattr(args, 'nano', False) and not args.print:
+        # Refuse rather than silently launching the maximal TUI: a user who
+        # asked for nano must never be handed the 17K-token surface by
+        # accident. Interactive nano lands in a follow-up PR.
+        from src.cli_core.exit import cli_error
+
+        cli_error(
+            "error: --nano currently requires -p/--print (headless). "
+            "Interactive nano mode is planned; for now run: "
+            "clawcodex --nano -p \"<prompt>\"",
+            2,
+        )
+
     if args.print:
         profile_checkpoint("mode_dispatch_print")
         # ``phase4_dispatch``: launcher has chosen a mode and is about
@@ -526,6 +539,22 @@ Examples:
         help='Emit verbose diagnostics to stderr',
     )
 
+    # ---- Nano mode ----
+    # pi-shaped minimal profile (see src/nano/): six tools (Read, Bash,
+    # Edit, Write, Grep, Glob), a ~600-token system prompt, no per-turn
+    # context injections, /eco on. Top-level because it will eventually
+    # apply to every surface; v1 wires the headless (-p) path only and
+    # errors otherwise rather than silently running maximal.
+    parser.add_argument(
+        '--nano',
+        action='store_true',
+        help=(
+            'Nano mode: minimal pi-style harness profile — six tools, tiny '
+            'system prompt, byte-stable context, eco compression on. '
+            'Currently requires -p/--print (headless).'
+        ),
+    )
+
     # ---- Permissions ----
     # ``--dangerously-skip-permissions`` and ``--allow-dangerously-skip-permissions``
     # apply to all UI modes (REPL, TUI, headless), so they live in a top-level
@@ -696,6 +725,7 @@ def _run_print_mode(args) -> int:
         disallowed_tools=tuple(disallowed),
         include_partial_messages=bool(args.include_partial_messages),
         verbose=bool(args.verbose),
+        nano=bool(getattr(args, 'nano', False)),
     )
     try:
         return run_headless(options)
