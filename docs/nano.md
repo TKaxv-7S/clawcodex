@@ -8,11 +8,16 @@ changes: nano is a default-off process flag consulted at a handful of
 chokepoints.
 
 ```bash
-clawcodex --nano -p "fix the failing test in src/parser.py"
+clawcodex --nano -p "fix the failing test in src/parser.py"   # headless
+clawcodex --nano                                              # interactive TUI
+clawcodex tui --nano                                          # explicit form
 ```
 
-Nano currently requires `-p`/`--print` (headless). Running `--nano`
-without `-p` errors rather than silently launching the maximal TUI.
+In the interactive TUI, the flag is forwarded to the spawned agent-server
+backend, which builds the nano registry and prompt before the first turn.
+Permission prompts, Shift+Tab mode cycling, and slash commands work as
+usual — nano changes what the *model* sees, not the UI. A mid-session
+`/model` or provider switch keeps the nano surface.
 
 ## What nano sends
 
@@ -61,10 +66,13 @@ The Harbor adapter forwards nano with `--ak nano=1`; see
 
 ## Current limits
 
-- Headless (`-p`) only; interactive TUI nano is planned.
 - No MCP servers, plugin/user tools, subagents, or task tools on the
   nano surface — that is the point; use default mode when you need them.
 - `--allowed-tools`/`--disallowed-tools` still filter the six.
+- Nano is process-global (the /eco contract): on the TUI's `--stdio`
+  transport that is exactly one session; on a multi-session
+  `agent-server --http` process, `--nano` applies to every session it
+  hosts.
 
 Design rationale and the pi study behind it: the harness comparison in
 `my-docs/clawcodex-nano/` (kept out of git) — headline: pi matched or

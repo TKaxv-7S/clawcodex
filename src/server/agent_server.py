@@ -135,6 +135,12 @@ class AgentServerConfig:
     # --allow-select-bypass; never derived from settings here (see the
     # multi-tenant --http note in _build_runtime).
     bypass_selectable: bool = False
+    # ``--nano`` — pi-shaped minimal profile (src/nano/, docs/nano.md): six
+    # tools, ~300-token prompt, byte-stable context, /eco on, no MCP.
+    # Process-global once set (the /eco one-process-one-switch contract), so
+    # on a multi-session transport every session in the process is nano; on
+    # the Ink TUI's --stdio transport that is exactly one session.
+    nano: bool = False
     max_turns: int = DEFAULT_MAX_TURNS
     allowed_tools: tuple[str, ...] = ()
     disallowed_tools: tuple[str, ...] = ()
@@ -2078,9 +2084,17 @@ class _AgentSession:
         (``settings.get_persisted_model``) resolves that name back to the
         fusion record.
         """
+        from src.nano.state import is_nano_mode
         from src.tool_system.defaults import build_default_registry
 
-        registry = build_default_registry(provider=provider)
+        if is_nano_mode():
+            # A mid-session provider switch must not resurrect the maximal
+            # surface in a nano session.
+            from src.nano.registry import build_nano_registry
+
+            registry = build_nano_registry()
+        else:
+            registry = build_default_registry(provider=provider)
         cfg = self.config
         # Canonicalize up front so alias-form flags (e.g. KillShell ->
         # TaskStop) resolve while the tool is still registered.
@@ -5747,7 +5761,21 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
         # the store's initial state doesn't misreport the mode — see the
         # block after setup_permissions.)
 
-        registry = build_default_registry(provider=provider)
+        if cfg.nano:
+            # Nano: set the process-global mode BEFORE registry and prompt
+            # construction so every chokepoint (the nano registry, the nano
+            # branch of build_effective_system_prompt, the per-turn reminder
+            # gates in run_query_as_agent_loop) observes it. Eco rides along,
+            # as on the headless path (entrypoints/headless.py).
+            from src.eco.state import set_eco_session
+            from src.nano.registry import build_nano_registry
+            from src.nano.state import set_nano_mode
+
+            set_nano_mode(True)
+            set_eco_session(True)
+            registry = build_nano_registry()
+        else:
+            registry = build_default_registry(provider=provider)
         profile_checkpoint("agent_server_registry_built")
         if cfg.allowed_tools:
             allow = {n.lower() for n in cfg.allowed_tools}
@@ -5763,8 +5791,10 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
         try:
             from src.server.mcp_runtime import McpRuntime
 
-            mcp_rt = McpRuntime()
-            if mcp_rt.start():
+            # Nano has no MCP surface (pi parity; docs/nano.md) — never
+            # even construct the runtime, so no servers get spawned.
+            mcp_rt = None if cfg.nano else McpRuntime()
+            if mcp_rt is not None and mcp_rt.start():
                 for mtool in mcp_rt.tools:
                     try:
                         registry.register(mtool)

@@ -181,6 +181,12 @@ def run_agent_server_subcommand(argv: list[str]) -> int:
              "idle-time-out). stdout is reserved for JSON frames; diagnostics go "
              "to stderr; stdin EOF ends the session.",
     )
+    parser.add_argument(
+        "--nano", action="store_true",
+        help="Nano mode (docs/nano.md): six tools, pi-style minimal prompt, "
+             "byte-stable context, /eco on, no MCP. Process-global — on a "
+             "multi-session transport every session in this process is nano.",
+    )
     args = parser.parse_args(argv)
 
     # The agent server is the backend for an interactive TUI/direct-connect
@@ -273,6 +279,7 @@ def run_agent_server_subcommand(argv: list[str]) -> int:
         is_bypass_available=is_bypass_available,
         bypass_selectable=bypass_selectable,
         max_turns=args.max_turns,
+        nano=bool(args.nano),
     )
 
     if args.stdio:
