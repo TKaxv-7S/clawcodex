@@ -21,6 +21,22 @@ def _reset_nano_state():
     reset_eco()
 
 
+@pytest.fixture(autouse=True)
+def _vision_unconfigured(monkeypatch):
+    """Hermetic default: the dev machine's real vision config must not flip
+    the conditional seventh tool on. Vision-specific tests override."""
+    import src.providers.vision_config as vision_config
+
+    monkeypatch.setattr(vision_config, "vision_is_configured", lambda: False)
+
+
+@pytest.fixture
+def vision_configured(monkeypatch):
+    import src.providers.vision_config as vision_config
+
+    monkeypatch.setattr(vision_config, "vision_is_configured", lambda: True)
+
+
 @pytest.fixture
 def no_skills(monkeypatch):
     """Hermetic prompt tests: no developer-machine skills leak in."""
