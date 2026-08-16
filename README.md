@@ -79,7 +79,7 @@ ClawCodex keeps your request prefix **byte-stable**, so DeepSeek's prompt cache 
 
 # The pi-style minimal harness, built in
 
-### Terminal-Bench 2.1 A/B (`fix-git` + `pypi-server`), same model, same wheel, one flag apart: **2/2 solved in both modes** — nano at **$0.0042 vs $0.0186 total (4.4× cheaper)**, up to 5.2× less input, faster on both.
+### Full Terminal-Bench 2.1, same model, head-to-head with the [pi harness](https://pi.dev) (its own TB setup, vision+websearch matched): **nano 64/89 (71.9%) at $1.31 vs pi 63/89 (70.8%) at $2.01** — equal-or-better score, **35% cheaper**, k=1.
 
 Six tools, a **~2K-token** fixed payload (vs ~16K default), zero per-turn injections, /eco on.
 `clawcodex --nano -p "<task>"` ports the pi harness's edit ladder (multi-edit + fuzzy match),
