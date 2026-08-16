@@ -70,6 +70,11 @@ The Harbor adapter forwards nano with `--ak nano=1`; see
 
 - No MCP servers, plugin/user tools, subagents, or task tools on the
   nano surface — that is the point; use default mode when you need them.
+- **No advisor, structurally**: even with `advisor_enabled` in settings
+  (host config or a seeded container), a nano session never activates the
+  reviewer model — its schema + instructions would break the fixed-payload
+  and byte-stability contracts, and a two-model loop is not what a nano
+  benchmark measures.
 - `--allowed-tools`/`--disallowed-tools` still filter the six.
 - Nano is process-global (the /eco contract): on the TUI's `--stdio`
   transport that is exactly one session; on a multi-session

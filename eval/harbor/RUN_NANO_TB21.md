@@ -72,3 +72,18 @@ Comparability notes mirror `RUN_PI_TB21.md`: nano has no
 vision_analyze/websearch, so image- and web-dependent TB tasks will lose
 capability relative to default clawcodex — that difference is part of
 what the A/B measures. Don't describe the runs as "same tools".
+
+## Fair nano-vs-pi setup
+
+For a clean head-to-head against pi, pair **nano** with **stock pi**
+(`--ak tools=off`, its native 4-tool surface): both are then text-only
+with no web access — capability parity of absence on TB's image/web
+tasks. `--ak tools=on` (the default) would grant pi vision_analyze +
+websearch that nano lacks. Keep both harnesses at model defaults: pass
+no `--ak effort=` / `--ak thinking=` and leave `CLAWCODEX_EFFORT` and
+`PI_THINKING` unset. The advisor is structurally off under nano
+(query.py's nano gate — settings cannot enable it), and it is never
+seeded unless `--ak advisor=` is passed; pass no advisor kwargs. Pin
+what runs: nano via a wheel built from the commit under test
+(`--ak source=`), pi via its adapter-pinned npm version
+(`--ak pi_version=` to override).

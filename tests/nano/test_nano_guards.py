@@ -175,6 +175,68 @@ def test_format_file_operations_omits_empty_sections():
     assert "<modified-files>\n/m.py\n</modified-files>" in only_mod
 
 
+# ---------------------------------------------------------------------------
+# Advisor gate — nano never runs a reviewer model, whatever settings say
+# ---------------------------------------------------------------------------
+
+
+def _advisor_settings():
+    from src.settings.types import SettingsSchema
+
+    return SettingsSchema(
+        advisor_enabled=True,
+        advisor_model="deepseek-v4-pro",
+        advisor_provider="deepseek",
+        advisor_client_mode=True,
+    )
+
+
+def _patch_advisor_settings(monkeypatch):
+    import src.settings.settings as settings_mod
+
+    monkeypatch.setattr(
+        settings_mod, "load_settings", lambda *a, **k: _advisor_settings()
+    )
+    monkeypatch.setattr(settings_mod, "_settings_cache", None)
+
+
+def _sent_tool_names(call: dict) -> list[str]:
+    return [t["name"] for t in (call["tools"] or call["kwargs"].get("tools") or [])]
+
+
+def test_nano_never_activates_the_advisor(fake_wiring, tmp_path, monkeypatch):
+    # Even with a fully configured, enabled advisor in settings (as a host
+    # config leak or container seed would produce), a nano session must send
+    # exactly the six tools and no advisor instructions — the gate sits above
+    # the settings read (query.py advisor resolution).
+    _patch_advisor_settings(monkeypatch)
+    fake_wiring.extend([_text("done")])
+    code, _out, err = _run("hello", tmp_path, nano=True)
+    assert code == 0, err
+
+    call = fake_wiring.created[-1].calls[0]
+    assert _sent_tool_names(call) == [
+        "Read", "Bash", "Edit", "Write", "Grep", "Glob",
+    ]
+    all_text = "".join(_message_text(m) for m in call["messages"]) + str(
+        call["kwargs"].get("system", "")
+    )
+    assert "advisor" not in all_text.lower()
+
+
+def test_default_mode_advisor_still_works(fake_wiring, tmp_path, monkeypatch):
+    # The gate must be nano-scoped: the same settings in default mode
+    # resolve CLIENT_SIDE (force_client + registered provider class) and
+    # append the advisor tool schema.
+    _patch_advisor_settings(monkeypatch)
+    fake_wiring.extend([_text("done")])
+    code, _out, err = _run("hello", tmp_path)
+    assert code == 0, err
+
+    call = fake_wiring.created[-1].calls[0]
+    assert "advisor" in _sent_tool_names(call)
+
+
 def test_compact_prompt_addendum_is_nano_gated():
     from src.services.compact.prompt import (
         NANO_ITERATIVE_ADDENDUM,
