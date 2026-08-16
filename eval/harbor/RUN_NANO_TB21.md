@@ -63,6 +63,25 @@ Aggregate: **2/2 pass in both modes; nano $0.0042 vs default $0.0186 —
 4.4× cheaper** at equal quality. Nano's fix-git trajectory was 10 focused
 Bash calls, zero tool errors.
 
+## Full-suite nano vs pi (89 tasks, deepseek-v4-flash, max thinking, k=1)
+
+Same wheel lineage, pi ran its TB extension (vision+websearch); the nano
+arm matched it (`NANO_VISION=openai:gpt-5.6-luna NANO_WEBSEARCH=1`):
+
+| | nano `tb21-nano-flash-max-2` | pi `tb21-pi-flash-max-2` |
+|---|---|---|
+| solved | **64/89 (71.9%)** | 63/89 (70.8%) |
+| cost | **$1.31** | $2.01 |
+| runtime | 5h38m | 5h54m |
+
+The pre-fix nano baseline (`tb21-nano-flash-max-1`, no vision/websearch,
+before the care/verification guidelines and staleness soft-refresh) was
+60/89 at $1.02. Six of the eleven tasks v2 gained are directly
+attributable to shipped fixes (vision ×1, websearch ×1, care ×1,
+timeout-race mechanics ×3); seven v1 passes flipped red on k=1
+variance (build/training-time jitter). At this k, treat 64-vs-63 as
+parity-to-slight-edge on score with a durable ~35% cost advantage.
+
 Nano sends six tools and a ~2K-token fixed payload (vs ~16K default), no
 per-turn injections, /eco on. A trivial live A/B outside Harbor
 (deepseek-v4-pro, write-and-verify, both solved in 4 turns) showed the
