@@ -659,19 +659,37 @@ def _bash_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
         )
 
     # Resolve timeout: prefer explicit timeout (ms), fall back to timeout_s (legacy), then default
+    #
+    # Nano mode removes the ceiling entirely (pi's bash has no default
+    # timeout). Measured on TB 2.1 (tb21-nano-flash-max-2): the 2-minute
+    # default / 10-minute cap forced nohup-and-poll loops on every long
+    # build or training run — 225 poll-pattern commands across the 25
+    # failed tasks, with compile-compcert alone burning 111 polls and
+    # dying at the 300-turn ceiling mid-build. One blocking call costs
+    # zero turns; the benchmark/task wall-clock and the abort signal
+    # (checked continuously by _run_supervised) remain the backstops.
+    from src.nano.state import is_nano_mode as _bash_is_nano
+
+    _nano = _bash_is_nano()
+    _NANO_NO_TIMEOUT_S = 86_400  # 24h — effectively "until abort/wall-clock"
     timeout_ms = tool_input.get("timeout")
     if timeout_ms is not None:
         max_ms = get_max_timeout_ms()
         if not isinstance(timeout_ms, (int, float)) or timeout_ms < 1000:
             raise ToolInputError("timeout must be at least 1000 ms")
-        if timeout_ms > max_ms:
+        if timeout_ms > max_ms and not _nano:
             raise ToolInputError(f"timeout must not exceed {max_ms} ms")
         timeout_s = int(timeout_ms / 1000)
     else:
         timeout_s = tool_input.get("timeout_s")
         if timeout_s is None:
-            timeout_s = int(get_default_timeout_ms() / 1000)
-        if not isinstance(timeout_s, int) or timeout_s < 1 or timeout_s > 600:
+            timeout_s = (
+                _NANO_NO_TIMEOUT_S if _nano
+                else int(get_default_timeout_ms() / 1000)
+            )
+        if not isinstance(timeout_s, int) or timeout_s < 1 or (
+            timeout_s > 600 and not _nano
+        ):
             raise ToolInputError("timeout_s must be an integer between 1 and 600")
 
     # Persist cwd across invocations (port of ``typescript/src/utils/Shell.ts``,
