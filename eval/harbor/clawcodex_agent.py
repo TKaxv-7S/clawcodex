@@ -390,6 +390,7 @@ class Clawcodex(BaseInstalledAgent):
         advisor_effort: str | None = None,
         vision: str | None = None,
         nano: bool | str = False,
+        websearch: bool | str = False,
         *args,
         **kwargs,
     ):
@@ -405,6 +406,15 @@ class Clawcodex(BaseInstalledAgent):
         self._nano = (
             nano if isinstance(nano, bool)
             else parse_bool_env_value(str(nano).lower(), name="nano")
+        )
+        # ``--ak websearch=1`` — opt nano into the WebSearch tool (seeded as
+        # config ``nano.websearch``; the tool additionally needs a resolvable
+        # TAVILY_API_KEY, which forward_keys carries by default). Mirrors
+        # pi's TB extension, whose websearch registers when the key is
+        # exported. No effect outside nano mode.
+        self._websearch = (
+            websearch if isinstance(websearch, bool)
+            else parse_bool_env_value(str(websearch).lower(), name="websearch")
         )
         self._source = source
         # A ``source`` that resolves to a real file on the host is a
@@ -855,6 +865,11 @@ class Clawcodex(BaseInstalledAgent):
         config: dict[str, Any] = {}
         if settings:
             config["settings"] = settings
+        if self._websearch:
+            # Nano's explicit WebSearch opt-in (src/nano/registry.py
+            # _nano_websearch_configured) — key-presence alone must not
+            # grow the nano surface.
+            config["nano"] = {"websearch": True}
         env_block = self._host_env_keys()
         if env_block:
             config["env"] = env_block

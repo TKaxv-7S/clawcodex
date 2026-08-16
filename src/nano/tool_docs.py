@@ -42,4 +42,11 @@ NANO_TOOL_DOCS: dict[str, str] = {
         "Finds files by glob pattern (e.g. '**/*.py'), sorted by "
         "modification time. Use for locating files by name or path shape."
     ),
+    # Conditional tool — registered only when explicitly opted in
+    # (nano.websearch config) AND a search key resolves; see registry.py.
+    "WebSearch": (
+        "Searches the web and returns result titles, URLs, and snippets. "
+        "Use for information you cannot derive locally (current versions, "
+        "external docs, error messages)."
+    ),
 }

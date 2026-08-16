@@ -46,12 +46,13 @@ NANO_TOOL_SNIPPETS: dict[str, str] = {
     "Write": "create new files or fully overwrite existing ones",
     "Grep": "search file contents with regex (respects .gitignore)",
     "Glob": "find files by glob pattern",
-    # Conditional seventh tool — listed only when a vision model is
-    # configured and the registry registered it (see nano/registry.py).
+    # Conditional tools — listed only when configured and registered
+    # (see nano/registry.py).
     "vision_analyze": (
         "ask a configured vision model a question about a local image "
         "(screenshots, plots, photos, rendered output)"
     ),
+    "WebSearch": "search the web (titles, URLs, snippets)",
 }
 
 # The three non-tool guidelines at the end are distilled from clawcodex's
