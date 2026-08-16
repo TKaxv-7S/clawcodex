@@ -79,9 +79,10 @@ _GUIDELINES = (
     "- Run long builds, training runs, or downloads as ONE blocking bash "
     "command (tee output to a log) — never launch with nohup and poll in "
     "a loop",
-    "- Before finishing, re-read the task and verify each explicit "
-    "requirement against what you actually produced; plausible output "
-    "is not verified output",
+    "- Before finishing, re-read the task and list every explicit "
+    "requirement and constraint (exact formats, tolerances, numeric "
+    "bounds, required sources or methods), then test your artifact "
+    "against each one; plausible output is not verified output",
     "- Be concise in your responses",
     "- Show file paths clearly when working with files",
 )
