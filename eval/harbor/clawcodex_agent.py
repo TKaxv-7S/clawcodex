@@ -805,9 +805,19 @@ class Clawcodex(BaseInstalledAgent):
 
         clawcodex's ``--effort`` flag governs the MAIN loop only; subagents
         (Agent tool) resolve effort from ``settings.effort``. Seeding the
-        container's global config (home-anchored ``~/.clawcodex/config.json``
-        — the global-config path deliberately does not follow
-        CLAWCODEX_CONFIG_DIR) makes the requested effort session-wide.
+        container's global config makes the requested effort session-wide.
+
+        The seed is written to ``$CLAWCODEX_CONFIG_DIR/config.json``
+        (``_CONTAINER_CONFIG_DIR``) — the SAME directory ``_build_env``
+        points the CLI at. It used to go to home-anchored
+        ``~/.clawcodex/config.json`` under a stale claim that the
+        global-config path "deliberately does not follow
+        CLAWCODEX_CONFIG_DIR": ``src/config.py`` has since unified the
+        config root on ``get_user_config_dir()`` (which honors the env
+        var), so every home-anchored seed — effort, advisor, vision,
+        env-block keys, fusion records — was silently inert in the
+        container. Found when a ``--ak vision=`` run's ``system/init``
+        advertised no vision tool.
 
         Also forwards the host's stored API keys (the global config's ``env``
         block) so tools that need one work inside the container -- WebSearch
@@ -871,12 +881,16 @@ class Clawcodex(BaseInstalledAgent):
         if not config:
             return
         payload = json.dumps(config)
+        # The literal container config dir, NOT "$CLAWCODEX_CONFIG_DIR": this
+        # exec's env carries only CLAWCODEX_SEED_CONFIG, so the variable would
+        # expand empty here. _inject_subscription_credentials writes only
+        # anthropic-oauth.json into the same dir — no clobber.
         await self.exec_as_agent(
             environment,
             command=(
-                'mkdir -p "$HOME/.clawcodex" && '
+                f'mkdir -p {_CONTAINER_CONFIG_DIR} && '
                 'printf \'%s\' "$CLAWCODEX_SEED_CONFIG" > '
-                '"$HOME/.clawcodex/config.json"'
+                f'{_CONTAINER_CONFIG_DIR}/config.json'
             ),
             env={"CLAWCODEX_SEED_CONFIG": payload},
         )
