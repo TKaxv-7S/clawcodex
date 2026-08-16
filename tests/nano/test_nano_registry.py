@@ -76,6 +76,27 @@ def test_vision_snippet_renders_in_prompt(vision_configured, tmp_path):
     assert "- vision_analyze: " in text
 
 
+def test_websearch_joins_only_when_opted_in(monkeypatch):
+    import src.nano.registry as registry_mod
+
+    monkeypatch.setattr(
+        registry_mod, "_nano_websearch_configured", lambda: True
+    )
+    names = [t.name for t in build_nano_registry().list_tools()]
+    assert names[-1] == "WebSearch"
+    ws = next(t for t in build_nano_registry().list_tools() if t.name == "WebSearch")
+    assert len(ws.prompt()) < 400  # pi-length doc override applied
+
+
+def test_websearch_absent_without_explicit_config():
+    # WebSearch.is_enabled defaults True (key errors surface at call
+    # time), so registration must hinge purely on the explicit
+    # nano.websearch config — a resolvable TAVILY key alone (the default
+    # forwarded-keys benchmark environment) must not grow the surface.
+    names = {t.name for t in build_nano_registry().list_tools()}
+    assert "WebSearch" not in names
+
+
 def test_default_registry_instances_untouched():
     # The nano registry carries copies; the shared static instances (and
     # therefore the default registry) must keep their full docs.

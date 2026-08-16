@@ -73,4 +73,35 @@ def build_nano_registry() -> ToolRegistry:
             registry.register(VisionAnalyzeTool)
     except Exception:  # noqa: BLE001 — a broken vision config never blocks nano
         pass
+    try:
+        from src.tool_system.tools import WebSearchTool
+
+        if _nano_websearch_configured() and WebSearchTool.is_enabled():
+            doc = NANO_TOOL_DOCS.get(WebSearchTool.name)
+            registry.register(
+                replace(WebSearchTool, prompt=lambda _doc=doc: _doc)
+                if doc else WebSearchTool
+            )
+    except Exception:  # noqa: BLE001 — a broken config never blocks nano
+        pass
     return registry
+
+
+def _nano_websearch_configured() -> bool:
+    """Explicit opt-in for WebSearch on the nano surface.
+
+    Reads global config ``nano.websearch is True`` (seeded by the harbor
+    adapter's ``--ak websearch=1``). Deliberately NOT keyed on the
+    TAVILY_API_KEY alone: keys are forwarded into benchmark containers by
+    default, and a key that happens to exist must not silently grow nano's
+    surface — the same explicitness bar as the vision config block. pi's
+    TB extension ships the same tool for the same reason (its runbook
+    exports TAVILY_API_KEY as a deliberate act).
+    """
+    try:
+        from src import config as cfg_mod
+
+        block = cfg_mod._get_default_manager().load_global().get("nano")
+        return isinstance(block, dict) and block.get("websearch") is True
+    except Exception:  # noqa: BLE001
+        return False

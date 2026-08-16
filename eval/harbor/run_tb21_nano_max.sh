@@ -63,6 +63,13 @@ if [ -n "${NANO_VISION:-}" ]; then
   AK_EXTRA+=(--ak "vision=$NANO_VISION")
   echo "vision: $NANO_VISION (nano registers vision_analyze)"
 fi
+# NANO_WEBSEARCH=1 opts nano into the WebSearch tool (needs a resolvable
+# TAVILY_API_KEY — forward_keys carries the host config env block by
+# default). Matches the pi TB extension's websearch.
+if [ "${NANO_WEBSEARCH:-0}" = "1" ]; then
+  AK_EXTRA+=(--ak websearch=1)
+  echo "websearch: enabled (nano registers WebSearch)"
+fi
 
 PYTHONPATH="$ROOT/eval/harbor" harbor run \
   --dataset terminal-bench/terminal-bench-2-1 \
