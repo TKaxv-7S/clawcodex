@@ -9,6 +9,14 @@
 # Usage, from the repo root:
 #   bash eval/harbor/run_tb21_nano_max.sh [job-name]
 # Default job name: tb21-nano-flash-max-1
+#
+# NANO_VISION=provider:model adds the vision arm — seeds the container's
+# vision config so nano registers its conditional vision_analyze tool
+# (docs/nano.md). Matching jobs/tb21-pi-flash-max-2 (which ran pi's TB
+# extension with gpt-5.6-luna vision) means:
+#   NANO_VISION=openai:gpt-5.6-luna bash eval/harbor/run_tb21_nano_max.sh
+# The vision provider's API key must be in the host env (the adapter
+# forwards it), e.g. OPENAI_API_KEY.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -50,6 +58,12 @@ fi
 echo "wheel: $WHEEL"
 echo "job:   eval/harbor/jobs/$JOB_NAME"
 
+AK_EXTRA=()
+if [ -n "${NANO_VISION:-}" ]; then
+  AK_EXTRA+=(--ak "vision=$NANO_VISION")
+  echo "vision: $NANO_VISION (nano registers vision_analyze)"
+fi
+
 PYTHONPATH="$ROOT/eval/harbor" harbor run \
   --dataset terminal-bench/terminal-bench-2-1 \
   --agent clawcodex_agent:Clawcodex \
@@ -61,7 +75,8 @@ PYTHONPATH="$ROOT/eval/harbor" harbor run \
   --retry-include ApiRateLimitError \
   --ak "source=$WHEEL" \
   --ak nano=1 \
-  --ak effort=max
+  --ak effort=max \
+  ${AK_EXTRA[@]+"${AK_EXTRA[@]}"}
 
 echo
 echo "Compare against the pi run with:"
