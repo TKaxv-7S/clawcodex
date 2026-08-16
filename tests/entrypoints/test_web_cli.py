@@ -72,7 +72,7 @@ def test_ipv6_host_is_bracketed() -> None:
 def _args(**overrides: object) -> argparse.Namespace:
     base = dict(
         host="127.0.0.1", port=0, token=None, workspace=None, provider=None, model=None,
-        effort=None, permission_mode=None, dangerously_skip_permissions=False,
+        effort=None, permission_mode=None, nano=False, dangerously_skip_permissions=False,
     )
     base.update(overrides)
     return argparse.Namespace(**base)
@@ -89,13 +89,13 @@ def test_serve_argv_forwards_every_agent_flag() -> None:
         _args(
             port=8317, token="t", workspace="/w", provider="deepseek",
             model="deepseek-v4-pro", effort="high", permission_mode="plan",
-            dangerously_skip_permissions=True,
+            nano=True, dangerously_skip_permissions=True,
         )
     )
     assert argv == [
         "--host", "127.0.0.1", "--port", "8317", "--token", "t", "--workspace", "/w",
         "--provider", "deepseek", "--model", "deepseek-v4-pro", "--effort", "high",
-        "--permission-mode", "plan", "--dangerously-skip-permissions",
+        "--permission-mode", "plan", "--nano", "--dangerously-skip-permissions",
     ]
 
 

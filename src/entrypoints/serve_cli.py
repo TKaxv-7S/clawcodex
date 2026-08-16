@@ -22,7 +22,7 @@ Usage::
 
     clawcodex serve [--host H] [--port P] [--token T] [--workspace DIR]
                     [--provider NAME] [--model M] [--effort E]
-                    [--permission-mode MODE]
+                    [--permission-mode MODE] [--nano]
                     [--dangerously-skip-permissions]
                     [--allow-dangerously-skip-permissions]
 """
@@ -97,6 +97,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--permission-mode", default=None, dest="permission_mode",
                         help="default | acceptEdits | bypassPermissions | plan | auto")
+    parser.add_argument(
+        "--nano", action="store_true",
+        help="Nano mode (docs/nano.md): six tools, pi-style minimal prompt, "
+             "byte-stable context, /eco on, no MCP. Process-global: every "
+             "session this gateway hosts is nano.",
+    )
     parser.add_argument("--dangerously-skip-permissions", action="store_true",
                         dest="dangerously_skip_permissions",
                         help="Bypass all permission checks (start in bypassPermissions).")
@@ -197,6 +203,17 @@ def run_serve_subcommand(argv: list[str], *, on_ready: ReadyHook | None = None) 
         print("serve: --fallback-model must differ from --model", file=sys.stderr)
         return 2
 
+    if args.nano:
+        # Set the process-global BEFORE any session spawns (sessions are
+        # created lazily by the gateway), so pre-session surfaces — the
+        # ``/api/status`` nano field the web client's welcome screen reads —
+        # report the truth from the first request. ``_build_runtime`` sets it
+        # again per spawn (idempotent) and builds the nano registry off
+        # ``cfg.nano`` below.
+        from src.nano.state import set_nano_mode
+
+        set_nano_mode(True)
+
     token = args.token if args.token is not None else os.environ.get(TOKEN_ENV) or ""
     if not token:
         token = secrets.token_urlsafe(32)
@@ -209,6 +226,9 @@ def run_serve_subcommand(argv: list[str], *, on_ready: ReadyHook | None = None) 
         permission_mode=args.permission_mode,
         is_bypass_available=is_bypass_available,
         bypass_selectable=bypass_selectable,
+        # Rides every per-session copy (spawn_for's dataclasses.replace keeps
+        # it), so a session created with its own provider/model is still nano.
+        nano=bool(args.nano),
         max_turns=args.max_turns,
     )
 

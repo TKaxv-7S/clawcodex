@@ -118,6 +118,10 @@ def _init_session_info(init: dict[str, Any]) -> dict[str, Any]:
     provider = init.get("provider")
     if provider:
         payload["provider"] = provider
+    # Nano mode (docs/nano.md) — the client renders a "nano" chip beside the
+    # model name. Strict ``is True``, always stamped: an init frame without
+    # the field (an older agent) must read as not-nano, never as unknown.
+    payload["nano"] = init.get("nano") is True
     session_id = init.get("session_id")
     if session_id:
         payload["stored_session_id"] = session_id
@@ -232,6 +236,11 @@ class DesktopSession:
             effort = settings.get("reasoning_effort") or settings.get("effort")
             if effort:
                 payload["reasoning_effort"] = str(effort)
+            # Same strict mapping as _init_session_info, and stamped on every
+            # republish for the same reason model is: a client doing full
+            # replaces must never lose (or invent) the nano chip on a model
+            # switch or turn end.
+            payload["nano"] = settings.get("nano") is True
         payload.update(extra)
         await self._broadcast("session.info", payload)
 

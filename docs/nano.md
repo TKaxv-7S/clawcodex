@@ -11,6 +11,8 @@ chokepoints.
 clawcodex --nano -p "fix the failing test in src/parser.py"   # headless
 clawcodex --nano                                              # interactive TUI
 clawcodex tui --nano                                          # explicit form
+clawcodex web --nano                                          # browser client
+clawcodex serve --nano                                        # desktop/web gateway
 ```
 
 In the interactive TUI, the flag is forwarded to the spawned agent-server
@@ -86,9 +88,11 @@ The Harbor adapter forwards nano with `--ak nano=1`; see
   tool for text-only main models; unconfigured nano stays exactly six.
 - `--allowed-tools`/`--disallowed-tools` still filter the six.
 - Nano is process-global (the /eco contract): on the TUI's `--stdio`
-  transport that is exactly one session; on a multi-session
-  `agent-server --http` process, `--nano` applies to every session it
-  hosts.
+  transport that is exactly one session; on a multi-session process
+  (`agent-server --http`, `clawcodex serve`, `clawcodex web`), `--nano`
+  applies to every session it hosts — including sessions created with
+  their own provider/model picks. The gateway reports it on
+  `/api/status` and stamps every `session.info` with `nano`.
 
 Design rationale and the pi study behind it: the harness comparison in
 `my-docs/clawcodex-nano/` (kept out of git) — headline: pi matched or
