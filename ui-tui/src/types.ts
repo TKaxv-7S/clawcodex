@@ -231,6 +231,9 @@ export interface SessionInfo {
   lazy?: boolean
   mcp_servers?: McpServerStatus[]
   model: string
+  // Nano mode (backend --nano, docs/nano.md): six-tool pi-style minimal
+  // harness. Rendered as a chip beside the model name, like `fast`.
+  nano?: boolean
   permission_mode?: string
   profile_name?: string
   reasoning_effort?: string

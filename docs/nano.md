@@ -17,7 +17,9 @@ In the interactive TUI, the flag is forwarded to the spawned agent-server
 backend, which builds the nano registry and prompt before the first turn.
 Permission prompts, Shift+Tab mode cycling, and slash commands work as
 usual — nano changes what the *model* sees, not the UI. A mid-session
-`/model` or provider switch keeps the nano surface.
+`/model` or provider switch keeps the nano surface. The status line shows
+a `nano` chip beside the model name (e.g. `deepseek-v4-flash nano`),
+driven by the backend's `system/init` frame.
 
 ## What nano sends
 

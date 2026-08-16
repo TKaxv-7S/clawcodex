@@ -308,6 +308,7 @@ class _AgentSession:
         # orchestration set; workers keep the full captured registry. Fresh
         # per call — see coordinator_main_loop_registry.
         from src.coordinator.mode import coordinator_main_loop_registry
+        from src.nano.state import is_nano_mode
 
         tools = _tool_schemas(coordinator_main_loop_registry(self.tool_registry))
         self._emit({
@@ -329,6 +330,12 @@ class _AgentSession:
             # before, so the badge was permanently blank even with
             # --effort set; None keeps it hidden.
             "reasoning_effort": self._effort,
+            # Nano mode (docs/nano.md) — the Ink client renders a "nano"
+            # chip beside the model name. Read from the live process-global
+            # state, not cfg.nano: it is the truth every chokepoint
+            # (registry, prompt, reminder gates) actually keys off, and
+            # init can be re-emitted later (e.g. _do_resume).
+            "nano": is_nano_mode(),
             "apiKeySource": "config",
         })
         if self.init_error is not None:

@@ -42,6 +42,8 @@ export interface SessionStatsLineInput {
   cols: number
   cwd: string
   model: string
+  /** Nano mode chip (session.info.nano) — rides the model segment. */
+  nano?: boolean
   provider: string
   stats: SessionStats
 }
@@ -52,7 +54,7 @@ export interface SessionStatsLineInput {
  * accumulators on the right are the payload, so the path yields first; if
  * even the cwd-less form overflows, the caller's truncate-end clips it.
  */
-export function buildSessionStatsLine({ cols, cwd, model, provider, stats }: SessionStatsLineInput): string {
+export function buildSessionStatsLine({ cols, cwd, model, nano, provider, stats }: SessionStatsLineInput): string {
   const tail = [
     `turns: ${stats.turns}`,
     `tokens: ${stats.inputTokens} in / ${stats.outputTokens} out`,
@@ -68,8 +70,12 @@ export function buildSessionStatsLine({ cols, cwd, model, provider, stats }: Ses
 
   let line = ''
 
+  // The chip rides the model segment (like StatusRule's `opus 4.8 nano`),
+  // so it is never shed by the cwd-narrowing loop below.
+  const modelSeg = nano && model ? `${model} nano` : model
+
   for (const variant of cwdVariants) {
-    line = [provider, model, variant, ...tail].filter(Boolean).join(' · ')
+    line = [provider, modelSeg, variant, ...tail].filter(Boolean).join(' · ')
 
     if (stringWidth(line) <= cols) {
       return line
