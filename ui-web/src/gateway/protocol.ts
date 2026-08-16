@@ -26,6 +26,13 @@ export interface SessionInfoPayload {
   cwd?: string
   desktop_contract?: number
   model?: string
+  /**
+   * Nano mode (backend `--nano`, docs/nano.md): six-tool pi-style minimal
+   * harness. Rendered as a chip beside the model name, like the TUI's.
+   * Compared strict `=== true` everywhere — absent on an older backend must
+   * stay falsy, never render a stale badge.
+   */
+  nano?: boolean
   provider?: string
   reasoning_effort?: string
   /** Whether the session's model accepts image input; false hides the attach control. */

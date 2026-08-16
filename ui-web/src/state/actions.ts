@@ -27,6 +27,7 @@ import type {
   SlashResult,
 } from '../gateway/protocol.ts'
 import {
+  $backendNano,
   $bootError,
   $bootPhase,
   $commands,
@@ -133,23 +134,25 @@ export async function start(): Promise<void> {
 }
 
 /**
- * The workspace the backend was started in.
+ * The backend facts the hero needs before any session exists.
  *
- * It is the directory the first session will run in, so the hero has to name
- * it *before* that session exists — and only REST knows it that early
- * (`session.info` carries a cwd, but not until a session is created).
+ * The workspace is the directory the first session will run in, and nano is
+ * whether that session will be a nano one — both have to be named *before*
+ * the session exists, and only REST knows them that early (`session.info`
+ * carries both, but not until a session is created).
  */
 async function seedWorkspace(target: BackendTarget): Promise<void> {
-  if ($workspace.get() !== '') return
-
   try {
-    const status = await apiGet<{ workspace?: string }>(target, '/status')
+    const status = await apiGet<{ nano?: boolean; workspace?: string }>(target, '/status')
 
-    if (typeof status.workspace === 'string' && status.workspace !== '') {
+    if ($workspace.get() === '' && typeof status.workspace === 'string' && status.workspace !== '') {
       $workspace.set(status.workspace)
     }
+
+    // Strict === true: an older backend without the field must stay falsy.
+    $backendNano.set(status.nano === true)
   } catch {
-    /* the hero simply omits the workspace chip */
+    /* the hero simply omits the workspace chip and the nano badge */
   }
 }
 
