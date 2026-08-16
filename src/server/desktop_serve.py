@@ -130,6 +130,11 @@ def build_app(state: DesktopServeState) -> Starlette:
     async def status(request: Request) -> Response:
         if not _token_ok(state, _rest_token(request)):
             return JSONResponse({"error": "unauthorized"}, status_code=401)
+        # Nano is process-global (serve_cli sets it at startup, before any
+        # session spawns), so this is the one fact a client can show on its
+        # welcome screen — session.info carries it only once a session exists.
+        from src.nano.state import is_nano_mode
+
         return JSONResponse(
             {
                 "status": "ok",
@@ -137,6 +142,7 @@ def build_app(state: DesktopServeState) -> Starlette:
                 "protocol_version": state.protocol_version,
                 "workspace": state.workspace,
                 "app": "clawcodex",
+                "nano": is_nano_mode(),
             }
         )
 

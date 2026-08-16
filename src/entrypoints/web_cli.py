@@ -10,7 +10,7 @@ Usage::
 
     clawcodex web [--host H] [--port P] [--no-open] [--build]
                   [--workspace DIR] [--provider NAME] [--model M] [--effort E]
-                  [--permission-mode MODE] [--allow-remote]
+                  [--permission-mode MODE] [--nano] [--allow-remote]
 
 Binding
 -------
@@ -100,6 +100,12 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="Reasoning effort seed for sessions.")
     parser.add_argument("--permission-mode", default=None, dest="permission_mode",
                         help="default | acceptEdits | bypassPermissions | plan | auto")
+    parser.add_argument(
+        "--nano", action="store_true",
+        help="Nano mode (docs/nano.md): six tools, pi-style minimal prompt, "
+             "byte-stable context, /eco on, no MCP. Every session this "
+             "server hosts is nano; the client shows a 'nano' chip.",
+    )
     parser.add_argument("--dangerously-skip-permissions", action="store_true",
                         dest="dangerously_skip_permissions",
                         help="Bypass all permission checks (start in bypassPermissions).")
@@ -222,6 +228,8 @@ def _serve_argv(args: argparse.Namespace) -> list[str]:
         argv += ["--effort", args.effort]
     if args.permission_mode:
         argv += ["--permission-mode", args.permission_mode]
+    if args.nano:
+        argv.append("--nano")
     if args.dangerously_skip_permissions:
         argv.append("--dangerously-skip-permissions")
     return argv

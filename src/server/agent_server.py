@@ -704,11 +704,18 @@ class _AgentSession:
             self._do_workflow_command(request_id, inner.get("name"), inner.get("args"))
             return
         if subtype == "get_settings":
+            from src.nano.state import is_nano_mode
+
             self._reply(request_id, {
                 "permission_mode": _current_mode(self.tool_context, self.config.permission_mode),
                 "model": getattr(self.provider, "model", None),
                 "provider": self.provider_name,
                 "available_models": self._available_models(),
+                # Nano mode (docs/nano.md) — same live process-global the init
+                # frame reports, so the serve gateway's session.info republish
+                # (publish_session_info) keeps the client's nano chip truthful
+                # across model switches and turn ends.
+                "nano": is_nano_mode(),
                 # The active fusion model's NAME, or "" when not on one.
                 # ``model`` above stays the base model id (what serves the
                 # turn, and what cost/context-window lookups key off), so
