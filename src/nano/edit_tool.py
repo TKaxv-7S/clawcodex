@@ -230,10 +230,22 @@ def _nano_edit_call(tool_input: dict[str, Any], context: ToolContext) -> ToolRes
         raise ToolInputError(
             f"file is too large ({size} bytes, max {_MAX_FILE_SIZE})"
         )
-    if not context.was_file_read_and_unchanged(path):
+    _read_status = context.file_read_status(path)
+    if _read_status == "not_read":
         raise ToolInputError(
             "file must be read first and be unchanged since last read"
         )
+    # "modified" — read before, but the file changed on disk since
+    # (commonly the agent's own script or a build touched it; 7 such
+    # blocks cost full round-trips in the first TB 2.1 nano run).
+    # Soft-refresh instead of demanding a ceremonial re-Read: proceed
+    # against the CURRENT bytes and let the ladder arbitrate — every
+    # old_string must still match uniquely in the current content, so an
+    # external change that touched the target region still fails with
+    # the actionable not-found/not-unique error, while changes elsewhere
+    # in the file no longer block the edit. The stock tool (and the
+    # blind-edit protection for never-read files) is unchanged; pi has
+    # no gate at all.
 
     # Bytes, not read_text: Python text mode does universal-newline
     # translation, which would silently erase CRLF before
