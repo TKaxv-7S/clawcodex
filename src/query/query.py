@@ -919,27 +919,38 @@ async def _call_model_sync(
     advisor_mode = ADVISOR_MODE_INACTIVE
     advisor_model_normalized: str | None = None
     try:
-        from ..settings.settings import get_settings
-        settings = get_settings()
-        configured = (getattr(settings, "advisor_model", "") or "").strip()
-        configured_provider = (getattr(settings, "advisor_provider", "") or "").strip()
-        force_client = bool(getattr(settings, "advisor_client_mode", False))
-        # Master switch (default False): the advisor stays inactive unless the
-        # user opted in via `advisor_enabled` in ~/.clawcodex/config.json.
-        advisor_enabled = bool(getattr(settings, "advisor_enabled", False))
-        if configured and advisor_enabled:
-            from ..models.model import canonical_model_name
-            candidate = canonical_model_name(configured)
-            advisor_mode = decide_advisor_mode(
-                provider,
-                main_loop_model,
-                candidate,
-                force_client_mode=force_client,
-                advisor_provider=configured_provider,
-                advisor_enabled=advisor_enabled,
-            )
-            if advisor_mode != ADVISOR_MODE_INACTIVE:
-                advisor_model_normalized = candidate
+        # Nano mode never runs an advisor — structural, not settings-driven.
+        # A second reviewer model appends its tool schema and
+        # ADVISOR_TOOL_INSTRUCTIONS to every request, which breaks nano's
+        # fixed-payload and byte-stability contracts (docs/nano.md), and a
+        # two-model loop is not the harness a nano benchmark measures. The
+        # gate sits here, above the settings read, so an advisor_enabled
+        # inherited from the host config or seeded into a container cannot
+        # leak into a nano session.
+        from src.nano.state import is_nano_mode as _advisor_is_nano
+
+        if not _advisor_is_nano():
+            from ..settings.settings import get_settings
+            settings = get_settings()
+            configured = (getattr(settings, "advisor_model", "") or "").strip()
+            configured_provider = (getattr(settings, "advisor_provider", "") or "").strip()
+            force_client = bool(getattr(settings, "advisor_client_mode", False))
+            # Master switch (default False): the advisor stays inactive unless the
+            # user opted in via `advisor_enabled` in ~/.clawcodex/config.json.
+            advisor_enabled = bool(getattr(settings, "advisor_enabled", False))
+            if configured and advisor_enabled:
+                from ..models.model import canonical_model_name
+                candidate = canonical_model_name(configured)
+                advisor_mode = decide_advisor_mode(
+                    provider,
+                    main_loop_model,
+                    candidate,
+                    force_client_mode=force_client,
+                    advisor_provider=configured_provider,
+                    advisor_enabled=advisor_enabled,
+                )
+                if advisor_mode != ADVISOR_MODE_INACTIVE:
+                    advisor_model_normalized = candidate
     except Exception:
         logger.exception(
             "Advisor activation check failed; treating advisor as inactive"
