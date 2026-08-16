@@ -48,6 +48,13 @@ NANO_TOOL_SNIPPETS: dict[str, str] = {
     "Glob": "find files by glob pattern",
 }
 
+# The three non-tool guidelines at the end are distilled from clawcodex's
+# full "Doing tasks" / "Executing actions with care" sections, restored
+# after the first TB 2.1 nano run showed exactly the failures they exist
+# to prevent (my-docs/clawcodex-nano/: a recovery task lost because the
+# first exploratory open of a database mutated it; tasks failed at the
+# wall clock with no artifact in place; confident summaries the verifier
+# rejected). Each is a universal engineering practice, kept to one line.
 _GUIDELINES = (
     "- Use Read to examine files instead of cat/sed/head, and Grep/Glob "
     "instead of shell grep/find",
@@ -56,6 +63,15 @@ _GUIDELINES = (
     "- When changing multiple places in one file, use ONE Edit call with "
     "multiple entries in edits[]; keep each old_string as small as "
     "possible while still unique, and never overlap edits",
+    "- Before probing or modifying state you might need intact later — "
+    "databases, files a task asks you to repair or recover, anything "
+    "one-of-a-kind — copy it somewhere safe first; some tools mutate "
+    "files merely by opening them",
+    "- Get a minimal working version of the requested deliverable in "
+    "place early, then iterate to improve it",
+    "- Before finishing, re-read the task and verify each explicit "
+    "requirement against what you actually produced; plausible output "
+    "is not verified output",
     "- Be concise in your responses",
     "- Show file paths clearly when working with files",
 )
