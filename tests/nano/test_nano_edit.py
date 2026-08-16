@@ -190,6 +190,41 @@ def test_tool_requires_read_first(tool_context, tmp_path):
         )
 
 
+def test_soft_refresh_when_file_changed_elsewhere(tool_context, tmp_path):
+    # Read → the agent's own script rewrites ANOTHER part of the file →
+    # Edit of an untouched region proceeds without a ceremonial re-Read.
+    import os
+    p = _write_and_read(tool_context, tmp_path, "s.py", "alpha\nbeta\ngamma\n")
+    p.write_text("ALPHA\nbeta\ngamma\n")
+    os.utime(p, (1, 1))  # force an mtime change even on coarse clocks
+    result = NanoEditTool.call(
+        {"file_path": str(p), "old_string": "gamma", "new_string": "GAMMA"},
+        tool_context,
+    )
+    assert p.read_text() == "ALPHA\nbeta\nGAMMA\n"
+    assert result.output["type"] == "update"
+    # Fingerprint refreshed: an immediate follow-up edit passes the gate.
+    NanoEditTool.call(
+        {"file_path": str(p), "old_string": "beta", "new_string": "BETA"},
+        tool_context,
+    )
+    assert p.read_text() == "ALPHA\nBETA\nGAMMA\n"
+
+
+def test_soft_refresh_still_blocks_changed_target(tool_context, tmp_path):
+    # The externally-changed region IS the edit target → the ladder's
+    # actionable not-found error, never a blind overwrite.
+    import os
+    p = _write_and_read(tool_context, tmp_path, "t.py", "alpha\nbeta\n")
+    p.write_text("ALPHA\nbeta\n")
+    os.utime(p, (1, 1))
+    with pytest.raises(ToolInputError, match="must match exactly"):
+        NanoEditTool.call(
+            {"file_path": str(p), "old_string": "alpha", "new_string": "omega"},
+            tool_context,
+        )
+
+
 def test_tool_crlf_file_edited_with_lf_oldstring(tool_context, tmp_path):
     p = _write_and_read(
         tool_context, tmp_path, "w.txt", "line one\r\nline two\r\n"
