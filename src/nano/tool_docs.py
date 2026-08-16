@@ -22,11 +22,8 @@ NANO_TOOL_DOCS: dict[str, str] = {
     ),
     "Bash": (
         "Executes a bash command and returns stdout+stderr. The working "
-        "directory persists between commands; shell state does not. No "
-        "default timeout: a long build or training run can block in a "
-        "single call (tee output to a log file) — pass timeout (ms) only "
-        "when you want one. Long output is truncated. Quote paths "
-        "containing spaces."
+        "directory persists between commands; shell state does not. Long "
+        "output is truncated. Quote paths containing spaces."
     ),
     # Edit is intentionally absent: the nano registry swaps in
     # NanoEditTool (src/nano/edit_tool.py), which carries its own doc for
