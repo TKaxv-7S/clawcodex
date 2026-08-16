@@ -75,6 +75,16 @@ what the A/B measures. Don't describe the runs as "same tools".
 
 ## Fair nano-vs-pi setup
 
+**Matching a pi run that used the TB extension** (vision_analyze +
+websearch — e.g. `jobs/tb21-pi-flash-max-2`, which ran
+`vision_model: gpt-5.6-luna`): add `--ak vision=openai:gpt-5.6-luna` to
+the nano arm so nano registers its identically-named `vision_analyze`
+tool. The 2026-08 run analysis found 4–5 of pi's exclusive wins used
+vision/websearch (chess-best-move, video-processing, path-tracing…);
+without the kwarg those tasks measure a capability gap, not the harness.
+Nano has no websearch analog wired yet — note it when comparing.
+
+
 For a clean head-to-head against pi, pair **nano** with **stock pi**
 (`--ak tools=off`, its native 4-tool surface): both are then text-only
 with no web access — capability parity of absence on TB's image/web

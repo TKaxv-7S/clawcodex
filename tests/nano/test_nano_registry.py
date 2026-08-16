@@ -56,6 +56,26 @@ def test_pi_length_docs_but_full_schemas():
         assert json.dumps(dict(t.input_schema))
 
 
+def test_vision_analyze_joins_only_when_configured(vision_configured):
+    reg = build_nano_registry()
+    names = [t.name for t in reg.list_tools()]
+    assert names == [
+        "Read", "Bash", "Edit", "Write", "Grep", "Glob", "vision_analyze",
+    ]
+    vision = next(t for t in reg.list_tools() if t.name == "vision_analyze")
+    # Registered live, never deferred/disabled — a registered-but-disabled
+    # tool would resurrect the <available-deferred-tools> message-0 block.
+    assert not vision.should_defer
+
+
+def test_vision_snippet_renders_in_prompt(vision_configured, tmp_path):
+    from src.nano.prompt import build_nano_prompt_text
+
+    names = tuple(t.name for t in build_nano_registry().list_tools())
+    text = build_nano_prompt_text(cwd=str(tmp_path), tool_names=names)
+    assert "- vision_analyze: " in text
+
+
 def test_default_registry_instances_untouched():
     # The nano registry carries copies; the shared static instances (and
     # therefore the default registry) must keep their full docs.

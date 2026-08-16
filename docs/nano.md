@@ -75,6 +75,12 @@ The Harbor adapter forwards nano with `--ak nano=1`; see
   reviewer model — its schema + instructions would break the fixed-payload
   and byte-stability contracts, and a two-model loop is not what a nano
   benchmark measures.
+- **One conditional seventh tool**: when a vision model is explicitly
+  configured (global config `vision.enabled`, e.g. seeded by the harbor
+  adapter's `--ak vision=provider:model`), nano registers
+  `vision_analyze` — ask the vision model about a local image. This
+  mirrors pi's own terminal-bench extension, which adds the identical
+  tool for text-only main models; unconfigured nano stays exactly six.
 - `--allowed-tools`/`--disallowed-tools` still filter the six.
 - Nano is process-global (the /eco contract): on the TUI's `--stdio`
   transport that is exactly one session; on a multi-session

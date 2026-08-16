@@ -40,7 +40,7 @@ NANO_TOOL_NAMES: tuple[str, ...] = tuple(t.name for t in NANO_TOOLS)
 
 
 def build_nano_registry() -> ToolRegistry:
-    """Registry holding exactly the six nano tools, none deferred.
+    """Registry holding the six nano tools, none deferred.
 
     Each tool is a registry-local copy carrying its pi-length doc
     (``NANO_TOOL_DOCS``) as ``prompt`` — ``query()`` sends ``tool.prompt()``
@@ -48,6 +48,17 @@ def build_nano_registry() -> ToolRegistry:
     payload from ~2K to ~250 tokens without touching the default registry's
     instances. Schemas are kept in full: parameter shapes are behavioral,
     docs are advisory.
+
+    Plus one conditional seventh: ``vision_analyze``, registered only when
+    a vision model is explicitly configured (the tool's own is_enabled
+    gate — global config ``vision.enabled``, seeded by the harbor
+    adapter's ``--ak vision=provider:model``). This mirrors pi's own TB
+    extension, which adds the same tool for text-only main models; an
+    unconfigured nano stays exactly six. Conditional REGISTRATION rather
+    than registering-disabled is load-bearing: a registered-but-disabled
+    tool would resurrect the ``<available-deferred-tools>`` message-0
+    block (query.py's deferred list includes disabled tools) and bust
+    nano's byte-stability.
     """
     registry = ToolRegistry()
     for tool in NANO_TOOLS:
@@ -55,4 +66,11 @@ def build_nano_registry() -> ToolRegistry:
         if doc is not None:
             tool = replace(tool, prompt=lambda _doc=doc: _doc)
         registry.register(tool)
+    try:
+        from src.tool_system.tools import VisionAnalyzeTool
+
+        if VisionAnalyzeTool.is_enabled():
+            registry.register(VisionAnalyzeTool)
+    except Exception:  # noqa: BLE001 — a broken vision config never blocks nano
+        pass
     return registry
