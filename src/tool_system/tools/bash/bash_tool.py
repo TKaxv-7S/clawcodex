@@ -34,6 +34,10 @@ class _BashRunResult:
     stderr: str
     interrupted: bool = False
     timed_out: bool = False
+    # Killed by the output-idle watchdog (no stdout/stderr for the idle
+    # window while still running) — the "stuck forever" detector for
+    # nano's unbounded-timeout contract.
+    idle_timed_out: bool = False
 
 
 def _get_abort_signal(context: ToolContext) -> Any:
@@ -60,8 +64,9 @@ def _run_bash_with_abort(
     cwd: str,
     timeout_s: int,
     abort_signal: Any | None,
+    idle_timeout_s: int | None = None,
 ) -> _BashRunResult:
-    """Run ``argv`` with abort + timeout supervision.
+    """Run ``argv`` with abort + timeout + output-idle supervision.
 
     Replaces ``subprocess.run(..., timeout=...)``: launches the
     subprocess in its own session/process group, polls for completion
@@ -69,6 +74,18 @@ def _run_bash_with_abort(
     the whole group (SIGTERM → grace → SIGKILL) when either fires.
     Returning quickly on abort is what makes ESC feel instant — the
     previous ``subprocess.run`` had to wait the entire timeout.
+
+    Both pipes are drained CONCURRENTLY by reader threads. This is
+    load-bearing twice over: (1) with ``communicate()``-at-the-end, any
+    command writing more than the OS pipe buffer (~64KB) blocked on
+    write and could never exit — under a hard timeout that surfaced as a
+    bogus "timed out", under nano's unbounded timeout it would hang
+    outright; (2) the readers stamp ``last_output``, which powers
+    ``idle_timeout_s`` — the stuck-command detector for the unbounded
+    contract: a process that stays silent for the whole idle window
+    while still running is presumed stuck (waiting for input it will
+    never get, deadlocked, or hung) and is killed with an actionable
+    error, while a noisy 40-minute build never trips it.
     """
 
     # ``stdin=DEVNULL`` matches TS ``Shell.ts`` (stdio[0] = 'pipe' with the
@@ -76,12 +93,17 @@ def _run_bash_with_abort(
     # parent's stdin -- when clawcodex runs in a terminal, that's a TTY, and
     # scaffolders like ``npm create vite`` see ``isatty(0)`` and try to prompt
     # for confirmation, hanging the command until timeout.
+    # Byte pipes, decoded at assembly: the drain threads must use raw
+    # ``os.read``, which returns as soon as ANY bytes are available —
+    # ``TextIOWrapper.read(n)`` blocks until n chars accumulate, which
+    # would starve the idle watchdog's liveness stamp on drip-feed output
+    # (observed: a command echoing every 2s was idle-killed because its
+    # small writes sat inside the buffered reader).
     popen_kwargs: dict[str, Any] = {
         "cwd": cwd,
         "stdin": subprocess.DEVNULL,
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
-        "text": True,
         **popen_tree_kwargs(),
     }
 
@@ -95,9 +117,40 @@ def _run_bash_with_abort(
 
     proc = subprocess.Popen(argv, **popen_kwargs)
 
+    import threading as _threading
+
+    out_chunks: list[bytes] = []
+    err_chunks: list[bytes] = []
+    last_output = [_time_mod.monotonic()]
+
+    def _drain(stream: Any, chunks: list[bytes]) -> None:
+        try:
+            fd = stream.fileno()
+            while True:
+                chunk = _os_mod.read(fd, 65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                last_output[0] = _time_mod.monotonic()
+        except (OSError, ValueError):
+            pass
+        finally:
+            try:
+                stream.close()
+            except OSError:
+                pass
+
+    readers = [
+        _threading.Thread(target=_drain, args=(proc.stdout, out_chunks), daemon=True),
+        _threading.Thread(target=_drain, args=(proc.stderr, err_chunks), daemon=True),
+    ]
+    for r in readers:
+        r.start()
+
     deadline = _time_mod.monotonic() + timeout_s
     interrupted = False
     timed_out = False
+    idle_timed_out = False
 
     while True:
         if proc.poll() is not None:
@@ -105,8 +158,12 @@ def _run_bash_with_abort(
         if abort_signal is not None and getattr(abort_signal, "aborted", False):
             interrupted = True
             break
-        if _time_mod.monotonic() >= deadline:
+        now = _time_mod.monotonic()
+        if now >= deadline:
             timed_out = True
+            break
+        if idle_timeout_s is not None and now - last_output[0] >= idle_timeout_s:
+            idle_timed_out = True
             break
         _time_mod.sleep(_ABORT_POLL_INTERVAL_S)
 
@@ -120,48 +177,38 @@ def _run_bash_with_abort(
     # ``interrupted`` / ``timed_out`` are the source-of-truth
     # discriminator for downstream callers; the exit-code label is
     # rewritten in ``_bash_call``.
-    if interrupted or timed_out:
+    if interrupted or timed_out or idle_timed_out:
         kill_process_tree(proc.pid, force=True)
         try:
             proc.wait(timeout=_KILL_REAP_TIMEOUT_S)
         except subprocess.TimeoutExpired:
             # SIGKILL is uncatchable, so this only happens when the
             # process is in an uninterruptible kernel wait (e.g. stuck
-            # on an NFS mount). Nothing more we can do — fall through
-            # to ``communicate()`` to drain whatever pipes are open.
+            # on an NFS mount). Nothing more we can do — the readers
+            # keep whatever output already arrived.
+            pass
+    else:
+        try:
+            proc.wait(timeout=_KILL_REAP_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
             pass
 
-    # ``communicate()`` after a kill is safe and gathers any pending
-    # output that buffered before the signal landed.
-    try:
-        stdout, stderr = proc.communicate(timeout=_KILL_REAP_TIMEOUT_S)
-    except subprocess.TimeoutExpired as exc:
-        # A user command can intentionally detach a descendant without using
-        # ``run_in_background`` (for example ``nohup server ... &``). The
-        # shell exits, but the descendant's intermediary shell may retain our
-        # pipe, so communicate cannot observe EOF. TimeoutExpired still
-        # carries everything already read; preserve it instead of replacing a
-        # successful command's output with "(Bash completed with no output)".
-        def _captured(value: Any) -> str:
-            if isinstance(value, bytes):
-                return value.decode(errors="replace")
-            return value if isinstance(value, str) else ""
-
-        stdout = _captured(exc.output)
-        stderr = _captured(exc.stderr)
-        for pipe in (proc.stdout, proc.stderr):
-            if pipe is not None:
-                try:
-                    pipe.close()
-                except OSError:
-                    pass
+    # Join the drain threads briefly. A detached descendant (``nohup
+    # server ... &``) can hold the pipe open past the shell's exit, so a
+    # reader may never see EOF — the old ``communicate(timeout=...)``
+    # TimeoutExpired edge. Daemon threads make abandonment safe, and the
+    # chunk lists already hold everything read so far, which is exactly
+    # what the old path salvaged from ``TimeoutExpired``.
+    for r in readers:
+        r.join(timeout=_KILL_REAP_TIMEOUT_S)
 
     return _BashRunResult(
         returncode=proc.returncode if proc.returncode is not None else -1,
-        stdout=stdout or "",
-        stderr=stderr or "",
+        stdout=b"".join(out_chunks).decode(errors="replace"),
+        stderr=b"".join(err_chunks).decode(errors="replace"),
         interrupted=interrupted,
         timed_out=timed_out,
+        idle_timed_out=idle_timed_out,
     )
 
 # ``\b`` is the WRONG boundary for a command NAME: ``-`` is a non-word
@@ -731,12 +778,51 @@ def _bash_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
                 output={"error": str(exc)},
                 is_error=True,
             )
+        # Stuck-command detection for nano's unbounded-timeout contract:
+        # a command that stays COMPLETELY silent for the idle window while
+        # still running is presumed stuck; noisy long builds never trip
+        # it. Stock mode keeps None — its hard timeout already bounds the
+        # damage. Small floor so a typo'd env cannot make it flap.
+        _idle_timeout_s: int | None = None
+        if _nano:
+            try:
+                _idle_timeout_s = max(
+                    5, int(_os_mod.environ.get("NANO_BASH_IDLE_TIMEOUT_S", "600"))
+                )
+            except (ValueError, TypeError):
+                _idle_timeout_s = 600
+
         run_result = _run_bash_with_abort(
             argv,
             cwd=str(cwd),
             timeout_s=timeout_s,
             abort_signal=_get_abort_signal(context),
+            idle_timeout_s=_idle_timeout_s,
         )
+
+        if run_result.idle_timed_out:
+            idle_msg = (
+                f"Command produced no output for {_idle_timeout_s}s and was "
+                "killed as likely stuck (waiting for input it will never "
+                "receive, deadlocked, or hung). If it is interactive, re-run "
+                "it non-interactively (--yes/-y flags, `printf 'answer\\n' |`, "
+                "`</dev/null`). If it is legitimately quiet for long "
+                "stretches, re-run it with progress output (verbose flags, "
+                "`| tee log`) or pass an explicit `timeout`."
+            )
+            return ToolResult(
+                name=BASH_TOOL_NAME,
+                output={
+                    "cwd": str(cwd),
+                    "exit_code": 143,
+                    "stdout": truncate_output(run_result.stdout or ""),
+                    "stderr": truncate_output(
+                        (idle_msg + "\n" + (run_result.stderr or "")).strip()
+                    ),
+                    "idle_timed_out": True,
+                },
+                is_error=True,
+            )
 
         if run_result.interrupted:
             # ESC-abort path. Mirrors TS ``BashTool.tsx:610-630`` where

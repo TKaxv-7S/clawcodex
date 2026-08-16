@@ -56,6 +56,62 @@ def test_minimum_floor_still_enforced_in_nano(ctx):
         _run(ctx, timeout=10)
 
 
+def test_idle_watchdog_kills_silent_stuck_command(ctx, monkeypatch):
+    import time
+
+    monkeypatch.setenv("NANO_BASH_IDLE_TIMEOUT_S", "5")
+    set_nano_mode(True)
+    t0 = time.monotonic()
+    result = BashTool.call({"command": "sleep 60"}, ctx)
+    elapsed = time.monotonic() - t0
+    assert elapsed < 15, f"watchdog too slow: {elapsed:.0f}s"
+    assert result.is_error
+    assert "no output" in str(result.output)
+    assert "re-run" in str(result.output)
+
+
+def test_idle_watchdog_spares_chatty_long_command(ctx, monkeypatch):
+    monkeypatch.setenv("NANO_BASH_IDLE_TIMEOUT_S", "5")
+    set_nano_mode(True)
+    result = BashTool.call(
+        {"command": "for i in 1 2 3 4; do echo tick-$i; sleep 2; done; echo chatty-done"},
+        ctx,
+    )
+    assert not result.is_error
+    assert "chatty-done" in str(result.output)
+
+
+def test_pipe_drain_handles_output_beyond_pipe_buffer(ctx):
+    # >64KB written before exit used to fill the un-drained pipe and block
+    # the child forever (masked by the stock hard timeout as a bogus
+    # "timed out"). The concurrent readers drain it.
+    set_nano_mode(True)
+    result = BashTool.call(
+        {"command": "echo drained-ok; python3 -c \"print('x'*300000)\""}, ctx
+    )
+    assert not result.is_error
+    assert "drained-ok" in str(result.output)
+    assert result.output.get("exit_code") == 0
+
+
+def test_pipe_drain_fixes_stock_mode_too(ctx):
+    result = BashTool.call(
+        {"command": "echo stock-ok; python3 -c \"print('y'*300000)\""}, ctx
+    )
+    assert not result.is_error
+    assert "stock-ok" in str(result.output)
+    assert result.output.get("exit_code") == 0
+
+
+def test_stock_has_no_idle_watchdog(ctx, monkeypatch):
+    # Stock keeps its hard-timeout model: a 7s-silent command with a 15s
+    # timeout completes even with the env set (the watchdog is nano-only).
+    monkeypatch.setenv("NANO_BASH_IDLE_TIMEOUT_S", "5")
+    result = BashTool.call({"command": "sleep 7 && echo stock-quiet-ok", "timeout": 15000}, ctx)
+    assert not result.is_error
+    assert "stock-quiet-ok" in str(result.output)
+
+
 def test_nano_bash_schema_drops_background_trap():
     # run_in_background needs TaskOutput (absent in nano) — a backgrounded
     # command strands its output; the nano schema must not advertise it.
