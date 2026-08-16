@@ -83,7 +83,6 @@ PYTHONPATH="$ROOT/eval/harbor" harbor run \
   --ak "source=$WHEEL" \
   --ak nano=1 \
   --ak effort=max \
-  --ak "max_turns=${NANO_MAX_TURNS:-600}" \
   ${AK_EXTRA[@]+"${AK_EXTRA[@]}"}
 
 echo
