@@ -76,6 +76,9 @@ _GUIDELINES = (
     "files merely by opening them",
     "- Get a minimal working version of the requested deliverable in "
     "place early, then iterate to improve it",
+    "- Run long builds, training runs, or downloads as ONE blocking bash "
+    "command (tee output to a log) — never launch with nohup and poll in "
+    "a loop",
     "- Before finishing, re-read the task and verify each explicit "
     "requirement against what you actually produced; plausible output "
     "is not verified output",
