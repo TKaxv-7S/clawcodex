@@ -65,6 +65,8 @@ def build_nano_registry() -> ToolRegistry:
         doc = NANO_TOOL_DOCS.get(tool.name)
         if doc is not None:
             tool = replace(tool, prompt=lambda _doc=doc: _doc)
+        if tool.name == "Bash":
+            tool = replace(tool, input_schema=_nano_bash_schema(tool.input_schema))
         registry.register(tool)
     try:
         from src.tool_system.tools import VisionAnalyzeTool
@@ -85,6 +87,30 @@ def build_nano_registry() -> ToolRegistry:
     except Exception:  # noqa: BLE001 — a broken config never blocks nano
         pass
     return registry
+
+
+def _nano_bash_schema(schema) -> dict:
+    """Bash schema minus the background-execution trap.
+
+    ``run_in_background`` needs the TaskOutput tool to retrieve results —
+    absent from the nano surface, so a backgrounded command strands its
+    output and forces the poll loops the no-timeout contract exists to
+    eliminate (tb21-nano-flash-max-2: 29 background launches across 9
+    trials, all long-running-work tasks). With no default timeout, one
+    blocking call is strictly better. The stale "(1-600)" cap text on the
+    legacy ``timeout_s`` goes too. additionalProperties stays false, so a
+    model that still passes run_in_background gets an actionable
+    validation error naming the property.
+    """
+    out = dict(schema)
+    props = dict(out.get("properties") or {})
+    props.pop("run_in_background", None)
+    if "timeout_s" in props:
+        ts = dict(props["timeout_s"])
+        ts["description"] = "Timeout in seconds"
+        props["timeout_s"] = ts
+    out["properties"] = props
+    return out
 
 
 def _nano_websearch_configured() -> bool:

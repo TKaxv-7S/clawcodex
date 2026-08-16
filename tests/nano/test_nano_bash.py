@@ -54,3 +54,15 @@ def test_minimum_floor_still_enforced_in_nano(ctx):
     set_nano_mode(True)
     with pytest.raises(ToolInputError, match="at least 1000 ms"):
         _run(ctx, timeout=10)
+
+
+def test_nano_bash_schema_drops_background_trap():
+    # run_in_background needs TaskOutput (absent in nano) — a backgrounded
+    # command strands its output; the nano schema must not advertise it.
+    from src.nano.registry import build_nano_registry
+
+    bash = next(t for t in build_nano_registry().list_tools() if t.name == "Bash")
+    assert "run_in_background" not in bash.input_schema["properties"]
+    assert "1-600" not in str(bash.input_schema["properties"].get("timeout_s", {}))
+    # Stock schema untouched.
+    assert "run_in_background" in BashTool.input_schema["properties"]
