@@ -76,3 +76,26 @@
     display: none;
   }
 }
+
+/* Nano mode fact chip (docs/nano.md). Sits among the picker triggers but is
+   not one: nano is a launch flag, so it has no menu, no hover, nothing to
+   toggle. Green because nano is the slim/eco profile — a fact, not a warning.
+   Deliberately NOT shed by the narrow-composer query above: like the TUI's
+   stats line, the mode must survive every narrowing. */
+.nanoBadge {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 10px;
+  background: var(--cc-alias-state-success-tertiary);
+  color: var(--cc-alias-state-success-primary);
+  font-size: 11px;
+  line-height: 20px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  cursor: default;
+  user-select: none;
+}

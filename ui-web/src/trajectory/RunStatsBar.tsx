@@ -4,6 +4,8 @@ import css from './RunStatsBar.module.css'
 
 export interface RunStatsBarProps {
   model?: string
+  /** Nano mode chip (session.info.nano) — rides the model segment. */
+  nano?: boolean
   provider?: string
   stats: TrajectoryStats
 }
@@ -21,7 +23,7 @@ export interface RunStatsBarProps {
  * to go look at. Figures that were never measured are omitted rather than
  * printed as zero.
  */
-export function RunStatsBar({ model, provider, stats }: RunStatsBarProps) {
+export function RunStatsBar({ model, nano = false, provider, stats }: RunStatsBarProps) {
   const named = model !== undefined && model !== ''
 
   // Before the first turn there are no figures, and a bar holding nothing but
@@ -33,6 +35,10 @@ export function RunStatsBar({ model, provider, stats }: RunStatsBarProps) {
       {named && (
         <span className={css.group}>
           <span className={css.model}>{qualifiedModel(model ?? '', provider)}</span>
+          {/* The chip rides the model segment (like the TUI's stats line), so
+              whatever narrows this bar can never shed the mode without also
+              shedding the model it describes. */}
+          {nano && <span className={css.nano}>nano</span>}
         </span>
       )}
 

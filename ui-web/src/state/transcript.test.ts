@@ -200,6 +200,19 @@ describe('turn state', () => {
     expect(state.info).toMatchObject({ approval_mode: 'manual', model: 'm', provider: 'p' })
   })
 
+  it('keeps the nano flag across a session.info that omits it', () => {
+    // A mid-session model switch republishes session.info; the nano chip must
+    // survive it (matching the backend, where _install_provider keeps the
+    // nano registry) even if that republish carries no nano field.
+    const state = fold([
+      event('session.info', { model: 'm', nano: true }),
+      event('session.info', { model: 'm2', provider: 'p2' }),
+    ])
+
+    expect(state.info.nano).toBe(true)
+    expect(state.info.model).toBe('m2')
+  })
+
   it('accumulates usage across turns', () => {
     const state = fold([
       event('message.complete', {

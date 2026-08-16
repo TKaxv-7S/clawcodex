@@ -18,6 +18,7 @@ import {
   submitPrompt,
 } from '../state/actions.ts'
 import {
+  $backendNano,
   $commands,
   $connection,
   $contextUsage,
@@ -80,8 +81,15 @@ export function ConversationRoot() {
   const loading = useStore($sessionLoading)
   const tab = useStore($conversationTab)
   const trajectory = useStore($trajectory)
+  const backendNano = useStore($backendNano)
   const stats = useMemo(() => trajectoryStats(trajectory), [trajectory])
   const todos = useMemo(() => currentTodos(transcript.nodes), [transcript.nodes])
+
+  // The session's own truth once session.info reported it, else the backend's
+  // process-wide fact (/api/status) — same shape as the approval mode and
+  // model fallbacks in the composer below. The two can only disagree across a
+  // backend restart, and the session's word wins.
+  const nano = transcript.info.nano ?? backendNano
 
   const [draft, setDraft] = useState('')
   // null while in flight, so the panel can say "loading" rather than "no plan".
@@ -209,6 +217,7 @@ export function ConversationRoot() {
       effort={effort}
       hero={hero}
       models={models}
+      nano={nano === true}
       onApprovalModeChange={mode => {
         void setApprovalMode(mode)
       }}
@@ -374,6 +383,7 @@ export function ConversationRoot() {
             {seatPanel}
             <RunStatsBar
               model={transcript.info.model}
+              nano={nano === true}
               provider={transcript.info.provider}
               stats={stats}
             />
@@ -427,6 +437,7 @@ export function ConversationRoot() {
               {seatPanel}
               <RunStatsBar
                 model={transcript.info.model}
+                nano={nano === true}
                 provider={transcript.info.provider}
                 stats={stats}
               />

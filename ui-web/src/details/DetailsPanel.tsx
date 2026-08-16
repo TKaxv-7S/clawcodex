@@ -88,6 +88,16 @@ export function DetailsPanel() {
             <dd title={info.model}>{info.model ?? '—'}</dd>
             <dt>Provider</dt>
             <dd>{info.provider ?? '—'}</dd>
+            {/* Only when the session IS nano: default mode is not a fact worth
+                a row, and strict === true keeps older backends silent. */}
+            {info.nano === true && (
+              <>
+                <dt>Harness</dt>
+                <dd title="Nano mode: six tools, minimal prompt (launched with --nano)">
+                  nano
+                </dd>
+              </>
+            )}
             {info.reasoning_effort !== undefined && (
               <>
                 <dt>Effort</dt>

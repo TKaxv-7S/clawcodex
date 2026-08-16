@@ -23,6 +23,12 @@ usual — nano changes what the *model* sees, not the UI. A mid-session
 a `nano` chip beside the model name (e.g. `deepseek-v4-flash nano`),
 driven by the backend's `system/init` frame.
 
+The browser client (`clawcodex web --nano`) shows the same fact on three
+surfaces — a green `nano` chip beside the composer's model picker (from
+the welcome screen on, via `/api/status`), the chip riding the model
+segment of the run-stats line, and a `Harness: nano` row in the session
+details panel — all driven by the gateway's `session.info.nano`.
+
 ## What nano sends
 
 | | nano | default |

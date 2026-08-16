@@ -47,3 +47,17 @@
   color: var(--cc-alias-label-caption);
   white-space: nowrap;
 }
+
+/* Nano mode chip, riding the model segment (docs/nano.md). Same green as the
+   composer's badge so the two surfaces read as one fact. */
+.nano {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--cc-alias-state-success-tertiary);
+  color: var(--cc-alias-state-success-primary);
+  font-size: 10px;
+  line-height: 15px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}

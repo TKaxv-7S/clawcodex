@@ -63,6 +63,17 @@ export const $projects = atom<ProjectNode[]>([])
 export const $projectsLoading = atom<boolean>(false)
 export const $workspace = atom<string>('')
 
+/**
+ * Whether this backend runs in nano mode (`clawcodex web --nano`).
+ *
+ * Nano is process-global on the backend — every session it hosts is nano — so
+ * this is a boot-time fact from `/api/status`, not session state. It exists
+ * for the welcome screen: `session.info` also carries `nano`, but only once a
+ * session does, and the composer should say what the first prompt will run on
+ * before it is sent.
+ */
+export const $backendNano = atom<boolean>(false)
+
 export const $models = atom<ModelOptionsResult>({})
 /** Effort ladder for the running model; `supported: false` hides the chip. */
 export const $effort = atom<EffortOptionsResult>({ supported: false })

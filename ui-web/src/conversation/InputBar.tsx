@@ -29,12 +29,15 @@ import { EffortSelect } from './EffortSelect.tsx'
 import { ModelSelect } from './ModelSelect.tsx'
 import { PermissionSelect, type ApprovalMode } from './PermissionSelect.tsx'
 import css from './InputBar.module.css'
+import pickerCss from './Pickers.module.css'
 
 export interface InputBarProps {
   approvalMode?: ApprovalMode
   draft: string
   effort: EffortOptionsResult
   hero?: boolean
+  /** Nano mode (docs/nano.md) — renders a chip beside the model, like the TUI's. */
+  nano?: boolean
   /** False when the session's model would 400 on an image. */
   vision?: boolean
   models: ModelOptionsResult
@@ -66,6 +69,7 @@ export function InputBar({
   effort,
   hero = false,
   models,
+  nano = false,
   onApprovalModeChange,
   onDraftChange,
   onEffortChange,
@@ -529,6 +533,17 @@ export function InputBar({
               sessionProvider={sessionProvider}
             />
             <EffortSelect onChange={onEffortChange} options={effort} />
+            {/* After effort, matching the TUI's status-line order
+                (`model effort nano`). A fact chip, not a control: nano is a
+                launch flag, so there is nothing to open or toggle here. */}
+            {nano && (
+              <span
+                className={pickerCss.nanoBadge}
+                title="Nano mode: six tools, minimal prompt (launched with --nano)"
+              >
+                nano
+              </span>
+            )}
           </div>
           <div className={css.trailing}>
             <ContextMeter usage={usage} />
