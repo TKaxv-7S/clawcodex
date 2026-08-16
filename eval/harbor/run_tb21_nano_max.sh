@@ -27,10 +27,24 @@ if [ -z "${DEEPSEEK_API_KEY}" ]; then
   exit 2
 fi
 
-WHEEL="$(ls "$ROOT"/dist/clawcodex_cli-*.whl 2>/dev/null | head -1 || true)"
+# Wheel resolution: CLAWCODEX_WHEEL env > existing dist/ wheel > build one.
+# The build runs from a `git archive HEAD` export in a temp dir, never the
+# live checkout: setuptools' package discovery walks the ENTIRE project tree
+# before filtering to src/, and a working checkout carrying multi-GB
+# untracked payloads (reference_projects/ ~1.8G, eval/harbor/jobs/ grows
+# with every benchmark run) turns `uv build --wheel` into a de-facto hang.
+WHEEL="${CLAWCODEX_WHEEL:-}"
 if [ -z "$WHEEL" ]; then
-  echo "building wheel from the current checkout..."
-  uv build --wheel
+  WHEEL="$(ls "$ROOT"/dist/clawcodex_cli-*.whl 2>/dev/null | head -1 || true)"
+fi
+if [ -z "$WHEEL" ]; then
+  echo "building wheel from a clean git-archive export (untracked GBs in the checkout would stall setuptools discovery)..."
+  BUILD_DIR="$(mktemp -d)"
+  trap 'rm -rf "$BUILD_DIR"' EXIT
+  git -C "$ROOT" archive HEAD | tar -x -C "$BUILD_DIR"
+  (cd "$BUILD_DIR" && uv build --wheel)
+  mkdir -p "$ROOT/dist"
+  cp "$BUILD_DIR"/dist/clawcodex_cli-*.whl "$ROOT/dist/"
   WHEEL="$(ls "$ROOT"/dist/clawcodex_cli-*.whl | head -1)"
 fi
 echo "wheel: $WHEEL"
