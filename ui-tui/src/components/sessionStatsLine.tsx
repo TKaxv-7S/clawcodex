@@ -28,6 +28,7 @@ export const SessionStatsLine = memo(function SessionStatsLine({ cols }: { cols:
     cols: Math.max(1, cols - 6),
     cwd: ui.info.cwd ?? '',
     model: ui.info.model ?? '',
+    nano: ui.info.nano,
     provider: ui.info.profile_name ?? '',
     stats: ui.sessionStats
   })

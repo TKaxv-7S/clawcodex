@@ -2837,6 +2837,9 @@ export class GatewayClient extends EventEmitter {
     return {
       cwd: init.cwd,
       model: fusion || String(init.model ?? ''),
+      // Nano mode chip (backend --nano). Strict === true: absent on older
+      // backends must stay falsy, never render a stale badge.
+      nano: init.nano === true,
       permission_mode: typeof init.permission_mode === 'string' ? init.permission_mode : undefined,
       profile_name: init.provider ? String(init.provider) : undefined,
       // Rendered beside the model name; the backend sends the session's

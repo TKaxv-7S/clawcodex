@@ -194,3 +194,36 @@ class TestNanoBuildRuntime(_SessionHarness):
         sess = self._build(nano=True, disallowed_tools=("Glob",))
         names = [t.name for t in sess.tool_registry.list_tools()]
         self.assertEqual(names, ["Read", "Bash", "Edit", "Write", "Grep"])
+
+    def _emitted_frames(self, sess) -> list[dict]:
+        """Frames enqueued through the mocked loop by ``_emit``
+        (``loop.call_soon_threadsafe(out_queue.put_nowait, frame)``)."""
+        return [
+            call.args[1]
+            for call in sess.loop.call_soon_threadsafe.call_args_list
+            if len(call.args) == 2 and isinstance(call.args[1], dict)
+        ]
+
+    def _init_frame(self, sess) -> dict:
+        sess.emit_init()
+        frames = [
+            f for f in self._emitted_frames(sess)
+            if f.get("type") == "system" and f.get("subtype") == "init"
+        ]
+        self.assertTrue(frames, "emit_init produced no system/init frame")
+        return frames[-1]
+
+    def test_init_frame_carries_nano_for_the_badge(self) -> None:
+        # The Ink client renders the "nano" chip from this field
+        # (ui-tui/src/components/appChrome.tsx modelLabel).
+        sess = self._build(nano=True)
+        init = self._init_frame(sess)
+        self.assertIs(init["nano"], True)
+        self.assertEqual(
+            [t["name"] for t in init["tools"]], NANO_NAMES
+        )
+
+    def test_init_frame_nano_false_by_default(self) -> None:
+        sess = self._build()
+        init = self._init_frame(sess)
+        self.assertIs(init["nano"], False)
