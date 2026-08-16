@@ -77,12 +77,15 @@ what the A/B measures. Don't describe the runs as "same tools".
 
 **Matching a pi run that used the TB extension** (vision_analyze +
 websearch — e.g. `jobs/tb21-pi-flash-max-2`, which ran
-`vision_model: gpt-5.6-luna`): add `--ak vision=openai:gpt-5.6-luna` to
-the nano arm so nano registers its identically-named `vision_analyze`
-tool. The 2026-08 run analysis found 4–5 of pi's exclusive wins used
-vision/websearch (chess-best-move, video-processing, path-tracing…);
-without the kwarg those tasks measure a capability gap, not the harness.
-Nano has no websearch analog wired yet — note it when comparing.
+`vision_model: gpt-5.6-luna` with TAVILY websearch): add
+`--ak vision=openai:gpt-5.6-luna --ak websearch=1` to the nano arm
+(runner: `NANO_VISION=openai:gpt-5.6-luna NANO_WEBSEARCH=1`) so nano
+registers its identically-named `vision_analyze` plus WebSearch. The
+2026-08 run analysis found 4–5 of pi's exclusive wins used
+vision/websearch (chess-best-move ×3 vision, video-processing ×11+3,
+mteb-leaderboard ×2 web, path-tracing…); without the kwargs those tasks
+measure a capability gap, not the harness. Stock-vs-stock (no kwargs on
+nano, `--ak tools=off` on pi) is the other clean pairing.
 
 
 For a clean head-to-head against pi, pair **nano** with **stock pi**
