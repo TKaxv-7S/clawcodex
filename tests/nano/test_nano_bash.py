@@ -84,10 +84,11 @@ def test_idle_watchdog_spares_chatty_long_command(ctx, monkeypatch):
 def test_pipe_drain_handles_output_beyond_pipe_buffer(ctx):
     # >64KB written before exit used to fill the un-drained pipe and block
     # the child forever (masked by the stock hard timeout as a bogus
-    # "timed out"). The concurrent readers drain it.
+    # "timed out"). The concurrent readers drain it. Marker LAST: nano
+    # keeps the tail of long output (pi-style), not the head.
     set_nano_mode(True)
     result = BashTool.call(
-        {"command": "echo drained-ok; python3 -c \"print('x'*300000)\""}, ctx
+        {"command": "python3 -c \"print('x'*300000)\"; echo drained-ok"}, ctx
     )
     assert not result.is_error
     assert "drained-ok" in str(result.output)
@@ -110,6 +111,93 @@ def test_stock_has_no_idle_watchdog(ctx, monkeypatch):
     result = BashTool.call({"command": "sleep 7 && echo stock-quiet-ok", "timeout": 15000}, ctx)
     assert not result.is_error
     assert "stock-quiet-ok" in str(result.output)
+
+
+def _spill_path_from(text: str) -> str:
+    import re
+
+    m = re.search(r"Full output: (\S+)\]", text)
+    assert m, f"no spill footer in: {text[-400:]}"
+    return m.group(1)
+
+
+def test_nano_tail_keep_with_full_output_spill(ctx, monkeypatch):
+    # pi parity: long output keeps the TAIL (where a build's error and
+    # final metrics live) and the complete stream spills to a temp file
+    # whose path the model gets — instead of stock's head-keep that
+    # drops exactly the interesting part and discards the rest forever.
+    monkeypatch.setenv("BASH_MAX_OUTPUT_LENGTH", "2000")
+    set_nano_mode(True)
+    cmd = (
+        "echo HEAD-MARKER; "
+        "python3 -c \"print('filler-line\\n'*800, end='')\"; "
+        "echo TAIL-MARKER"
+    )
+    result = BashTool.call({"command": cmd}, ctx)
+    assert not result.is_error
+    assert result.output.get("exit_code") == 0
+    out = result.output["stdout"]
+    assert "TAIL-MARKER" in out
+    assert "HEAD-MARKER" not in out  # tail-keep, not head-keep
+    assert "of 802 lines" in out  # HEAD + 800 fillers + TAIL
+    assert len(out) < 2000 + 400  # bounded reply: limit + footer slack
+
+    from pathlib import Path
+
+    full = Path(_spill_path_from(out)).read_text()
+    assert full.startswith("HEAD-MARKER")  # complete from byte 0
+    assert full.endswith("TAIL-MARKER\n")
+    assert full.count("\n") == 802
+
+
+def test_nano_small_output_passes_through_unchanged(ctx, monkeypatch):
+    monkeypatch.setenv("BASH_MAX_OUTPUT_LENGTH", "2000")
+    set_nano_mode(True)
+    result = BashTool.call({"command": "echo small-ok"}, ctx)
+    out = result.output["stdout"]
+    assert "small-ok" in out
+    assert "[Showing" not in out and "Full output" not in out
+
+
+def test_nano_stderr_spills_separately_from_stdout(ctx, monkeypatch):
+    monkeypatch.setenv("BASH_MAX_OUTPUT_LENGTH", "2000")
+    set_nano_mode(True)
+    cmd = (
+        "python3 -c \"import sys; sys.stderr.write('err-line\\n'*600); "
+        "sys.stderr.write('ERR-TAIL\\n')\"; echo out-ok"
+    )
+    result = BashTool.call({"command": cmd}, ctx)
+    assert "out-ok" in result.output["stdout"]
+    assert "Full output" not in result.output["stdout"]  # stdout was small
+    err = result.output["stderr"]
+    assert "ERR-TAIL" in err
+    from pathlib import Path
+
+    full = Path(_spill_path_from(err)).read_text()
+    assert full.startswith("err-line") and full.endswith("ERR-TAIL\n")
+
+
+def test_nano_tail_decode_never_splits_multibyte(ctx, monkeypatch):
+    # The rolling-tail trim can cut mid-UTF-8-sequence; the render must
+    # re-align (pi's trimToLastUtf8Bytes) so no replacement chars leak.
+    monkeypatch.setenv("BASH_MAX_OUTPUT_LENGTH", "1000")
+    set_nano_mode(True)
+    result = BashTool.call({"command": "python3 -c \"print('é'*5000)\""}, ctx)
+    out = result.output["stdout"]
+    assert "Full output:" in out
+    assert "�" not in out
+
+
+def test_stock_truncation_unchanged_head_keep(ctx, monkeypatch):
+    monkeypatch.setenv("BASH_MAX_OUTPUT_LENGTH", "2000")
+    result = BashTool.call(
+        {"command": "echo STOCK-HEAD; python3 -c \"print('line\\n'*1000, end='')\""},
+        ctx,
+    )
+    out = result.output["stdout"]
+    assert "STOCK-HEAD" in out  # head kept
+    assert "lines truncated] ..." in out  # stock marker format
+    assert "Full output:" not in out  # no spill file in stock
 
 
 def test_nano_bash_schema_drops_background_trap():
