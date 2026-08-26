@@ -13,9 +13,13 @@ are provably unaffected. Covers:
   DeepSeek, keeping the system+history prefix byte-stable even when volatile
   sections (e.g. the mutable MEMORY.md body) change — while leaving every
   other provider's request bytes identical.
+* The DeepSeek rate card, including its peak/off-peak schedule (the schedule
+  itself is exercised in ``tests/test_deepseek_peak_pricing.py``).
 """
 
 from __future__ import annotations
+
+from datetime import datetime, timezone
 
 from src.context_system.prompt_assembly import build_full_system_prompt_blocks
 from src.models import get_context_window_for_model, get_model_max_output_tokens
@@ -166,24 +170,67 @@ def test_other_provider_usage_unchanged_by_cache_fields():
 # Cost wiring (services/pricing.py)
 # --------------------------------------------------------------------------- #
 
+# Pinned instants for the peak/off-peak card. Rates are time-tiered, so
+# every pricing assertion here passes an explicit ``request_time`` rather
+# than letting it default to whenever CI happens to run. The full schedule
+# lives in ``tests/test_deepseek_peak_pricing.py``.
+_OFF_PEAK = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc).timestamp()  # Mon
+_PEAK = datetime(2026, 8, 24, 2, 0, tzinfo=timezone.utc).timestamp()  # Mon
+
+
 def test_deepseek_pricing_registered():
+    """Published rates, pinned as absolutes on both sides of the schedule.
+
+    Checked 2026-08-25 against api-docs.deepseek.com/quick_start/pricing/.
+    Pinning absolutes (rather than ratios) is what catches a stale card —
+    the pre-2026-08-16 values in issue #904 were internally consistent and
+    still 3x low.
+    """
     from src.services.pricing import get_pricing
 
-    flash = get_pricing("deepseek-v4-flash")
-    pro = get_pricing("deepseek-v4-pro")
+    flash = get_pricing("deepseek-v4-flash", request_time=_OFF_PEAK)
+    pro = get_pricing("deepseek-v4-pro", request_time=_OFF_PEAK)
     assert flash is not None and pro is not None
-    assert flash["input"] == 0.14 / 1_000_000
-    assert flash["cache_read"] == 0.0028 / 1_000_000
-    assert pro["input"] == 0.435 / 1_000_000
-    assert pro["output"] == 0.87 / 1_000_000
+    assert flash["input"] == 0.22 / 1_000_000
+    assert flash["output"] == 0.66 / 1_000_000
+    assert flash["cache_read"] == 0.007 / 1_000_000
+    assert pro["input"] == 0.66 / 1_000_000
+    assert pro["output"] == 1.98 / 1_000_000
+    assert pro["cache_read"] == 0.022 / 1_000_000
+
+    flash_peak = get_pricing("deepseek-v4-flash", request_time=_PEAK)
+    pro_peak = get_pricing("deepseek-v4-pro", request_time=_PEAK)
+    assert flash_peak["input"] == 0.44 / 1_000_000
+    assert flash_peak["output"] == 1.32 / 1_000_000
+    assert flash_peak["cache_read"] == 0.014 / 1_000_000
+    assert pro_peak["input"] == 1.32 / 1_000_000
+    assert pro_peak["output"] == 3.96 / 1_000_000
+    assert pro_peak["cache_read"] == 0.044 / 1_000_000
+
+
+def test_deepseek_cache_creation_mirrors_input_on_both_cards():
+    """DeepSeek has no cache-WRITE charge — a miss is just input. The mirror
+    is what makes the generic ``compute_cost`` correct for this provider, and
+    it has to survive on the peak card too."""
+    from src.services.pricing import get_pricing
+
+    for ts in (_OFF_PEAK, _PEAK):
+        for model in ("deepseek-v4-flash", "deepseek-v4-pro"):
+            p = get_pricing(model, request_time=ts)
+            assert p["cache_creation"] == p["input"]
 
 
 def test_openrouter_deepseek_pricing_via_vendor_strip():
     """Consistent with how all proxied models are priced at the upstream rate
-    (get_pricing strips the ``deepseek/`` vendor prefix)."""
+    (get_pricing strips the ``deepseek/`` vendor prefix). The strip must carry
+    ``request_time`` through, or the proxied id would price off a different
+    clock reading than the bare one."""
     from src.services.pricing import get_pricing
 
-    assert get_pricing("deepseek/deepseek-v4-pro") == get_pricing("deepseek-v4-pro")
+    for ts in (_OFF_PEAK, _PEAK):
+        assert get_pricing("deepseek/deepseek-v4-pro", request_time=ts) == (
+            get_pricing("deepseek-v4-pro", request_time=ts)
+        )
 
 
 def test_deepseek_cost_credits_cache_hit_end_to_end():
@@ -197,12 +244,15 @@ def test_deepseek_cost_credits_cache_hit_end_to_end():
         prompt_tokens=1_000_000, completion_tokens=0, total_tokens=1_000_000,
         prompt_cache_hit_tokens=900_000, prompt_cache_miss_tokens=100_000,
     ))
-    cost = compute_cost("deepseek-v4-flash", usage)
-    expected = 100_000 * 0.14 / 1_000_000 + 900_000 * 0.0028 / 1_000_000
+    cost = compute_cost("deepseek-v4-flash", usage, request_time=_OFF_PEAK)
+    expected = 100_000 * 0.22 / 1_000_000 + 900_000 * 0.007 / 1_000_000
     assert abs(cost - expected) < 1e-12
     # ~9x cheaper than pricing the whole prompt as uncached input.
-    full = 1_000_000 * 0.14 / 1_000_000
+    full = 1_000_000 * 0.22 / 1_000_000
     assert cost < full / 5
+    # The same response costs exactly twice as much inside a peak window.
+    peak = compute_cost("deepseek-v4-flash", usage, request_time=_PEAK)
+    assert abs(peak - 2 * expected) < 1e-12
 
 
 def test_cost_command_surfaces_cache_hit_rate():

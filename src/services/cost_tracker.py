@@ -155,9 +155,17 @@ class CostTracker:
         return self._total_output_tokens
 
     def get_cache_savings(self) -> float:
+        # ``request_time=event.timestamp`` matters for time-tiered cards
+        # (DeepSeek V4 doubles during UTC peak hours): this runs at DISPLAY
+        # time, arbitrarily later than the requests it is summing, so pricing
+        # each event at "now" would report an off-peak session's savings at
+        # peak rates once the clock crossed 01:00 UTC.
         total_savings = 0.0
         for event in self._events:
-            pricing = _get_pricing(event.model) or DEFAULT_PRICING
+            pricing = (
+                _get_pricing(event.model, request_time=event.timestamp)
+                or DEFAULT_PRICING
+            )
             saved_per_token = pricing["input"] - pricing["cache_read"]
             total_savings += event.cache_read_input_tokens * saved_per_token
         return total_savings

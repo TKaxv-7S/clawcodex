@@ -68,6 +68,14 @@ def build_cost_block() -> dict[str, Any]:
     # display or budget gate (those keep reading the billed ``total_cost_usd``
     # / ``cost_usd``); it exists so downstream trajectory/leaderboard tooling
     # has a comparable cost column.
+    #
+    # Computed from AGGREGATED per-model totals, so it is exact only for
+    # models with no per-request rate tier. It already over-prices a
+    # context-tiered model (gpt-5.6-luna doubles above 272K prompt tokens)
+    # by treating a whole session as one giant request; for a time-tiered
+    # one (DeepSeek V4 doubles during UTC peak hours) it prices the whole
+    # session at the rate in force when the snapshot is written. Both need
+    # per-request cost records to fix, not a different call here.
     from src.services.pricing import compute_cost
 
     estimated_cost_usd = 0.0

@@ -81,8 +81,12 @@ class TestGetPricing(unittest.TestCase):
         self.assertEqual(p["input"], 5.0 / 1_000_000)
         # The same strip prices DeepSeek-via-OpenRouter at the upstream
         # DeepSeek rate (a directional estimate; the proxy may add markup).
-        d = get_pricing("deepseek/deepseek-v4-pro")
-        self.assertEqual(d["input"], 0.435 / 1_000_000)
+        # Time-tiered, so the instant is pinned: Monday 12:00 UTC is off-peak.
+        from datetime import datetime, timezone
+
+        off_peak = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc).timestamp()
+        d = get_pricing("deepseek/deepseek-v4-pro", request_time=off_peak)
+        self.assertEqual(d["input"], 0.66 / 1_000_000)
 
     def test_unknown_model_returns_none(self) -> None:
         # Critic C1: unknowns return None instead of mispricing as
