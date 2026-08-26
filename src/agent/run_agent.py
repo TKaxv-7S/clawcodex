@@ -35,7 +35,9 @@ logger = logging.getLogger(__name__)
 
 # Fallback max turns for subagents when no explicit limit is set.
 # Prevents unbounded loops that appear as hangs to the user.
-SUBAGENT_DEFAULT_MAX_TURNS = 30
+# Raised 30 -> 100: real multi-step subagent work was hitting the cap and
+# truncating before completion.
+SUBAGENT_DEFAULT_MAX_TURNS = 100
 
 
 @dataclass
