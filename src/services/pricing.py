@@ -5,6 +5,12 @@ of cost state lives in ``src.bootstrap.state`` (via
 ``add_to_total_cost_state`` and friends); this module just computes the
 dollar cost of a usage record.
 
+One exception to "pure", added for DeepSeek's peak/off-peak card: when a
+caller omits ``request_time``, ``get_pricing`` reads the wall clock to decide
+which side of that schedule a request falls on. Every caller that knows the
+real request time should pass it; "now" is only correct because the live path
+prices a response the moment it arrives.
+
 Pricing mirrors ``typescript/src/utils/modelCost.ts``: published Anthropic
 list prices per million tokens for first-party direct calls. Proxies
 (litellm, openrouter, bedrock, vertex) may apply different rates;
@@ -19,6 +25,8 @@ default gives the right order-of-magnitude.
 
 from __future__ import annotations
 
+import time
+from datetime import datetime, timezone
 from typing import Any
 
 
@@ -75,24 +83,77 @@ _TIER_HAIKU_3 = {
     "cache_creation": 0.30 / 1_000_000,
     "cache_read": 0.03 / 1_000_000,
 }
-# DeepSeek V4 (USD per million tokens). DeepSeek's automatic prefix cache
-# bills cache HITS at the low ``cache_read`` rate and cache MISSES at the
-# normal input rate; there is no separate cache-write charge, so
-# ``cache_creation`` mirrors ``input`` (a non-cached token is just input).
-# DeepSeekProvider maps its usage onto the Anthropic convention
-# (``input_tokens`` = miss, ``cache_read_input_tokens`` = hit), so these tiers
-# price correctly through the generic ``compute_cost``.
-_TIER_DEEPSEEK_FLASH = {
-    "input": 0.14 / 1_000_000,
-    "output": 0.28 / 1_000_000,
-    "cache_creation": 0.14 / 1_000_000,
-    "cache_read": 0.0028 / 1_000_000,
+# DeepSeek V4 (USD per million tokens) — checked 2026-08-25 against
+# https://api-docs.deepseek.com/quick_start/pricing/
+#
+# DeepSeek's automatic prefix cache bills cache HITS at the low ``cache_read``
+# rate and cache MISSES at the normal input rate; there is no separate
+# cache-write charge, so ``cache_creation`` mirrors ``input`` (a non-cached
+# token is just input). DeepSeekProvider maps its usage onto the Anthropic
+# convention (``input_tokens`` = miss, ``cache_read_input_tokens`` = hit), so
+# these tiers price correctly through the generic ``compute_cost``.
+#
+# TIME-TIERED since 2026-08-16: every rate DOUBLES during peak hours
+# (01:00-04:00 and 06:00-10:00 UTC, Monday through Friday); that is 7 hours
+# on each of 5 days, so off-peak covers 133 of every 168 hours. This is the
+# file's third tier axis, and the only one that is not a property of the
+# request's content — a prompt does not get cheaper at midnight, the clock
+# does. See ``is_deepseek_peak``.
+#
+# CORRECTED 2026-08-25 (issue #904): these rows held DeepSeek's
+# pre-2026-08-16 card — 0.14/0.28 flash, 0.435/0.87 pro — which was itself a
+# time-limited promotion, and no axis existed for the schedule that replaced
+# it. ``cache_read`` drove the error: at ~96% of agentic input tokens,
+# 0.003625 against a real 0.022 understated a deepseek-v4-pro session 2.3x
+# off-peak and 4.5x peak. A number that low still reads as authoritative, in
+# exactly the way ``get_pricing`` returning None does not. Hence the
+# checked-on date above: of everything in this file, DeepSeek is the row most
+# likely to move again, and a promo card that rots into silent
+# under-reporting is the same failure the Luna row below was written about.
+#
+# Not registered: ``deepseek-v4-flash-vision-exp``, which shares the flash
+# card on the vendor's page but has no row in ``models/configs.py`` and is
+# unreachable through the provider (``supports_vision=False``).
+_TIER_DEEPSEEK_FLASH_OFF_PEAK = {
+    "input": 0.22 / 1_000_000,
+    "output": 0.66 / 1_000_000,
+    "cache_creation": 0.22 / 1_000_000,
+    "cache_read": 0.007 / 1_000_000,
 }
-_TIER_DEEPSEEK_PRO = {
-    "input": 0.435 / 1_000_000,
-    "output": 0.87 / 1_000_000,
-    "cache_creation": 0.435 / 1_000_000,
-    "cache_read": 0.003625 / 1_000_000,
+_TIER_DEEPSEEK_FLASH_PEAK = {
+    "input": 0.44 / 1_000_000,
+    "output": 1.32 / 1_000_000,
+    "cache_creation": 0.44 / 1_000_000,
+    "cache_read": 0.014 / 1_000_000,
+}
+_TIER_DEEPSEEK_PRO_OFF_PEAK = {
+    "input": 0.66 / 1_000_000,
+    "output": 1.98 / 1_000_000,
+    "cache_creation": 0.66 / 1_000_000,
+    "cache_read": 0.022 / 1_000_000,
+}
+_TIER_DEEPSEEK_PRO_PEAK = {
+    "input": 1.32 / 1_000_000,
+    "output": 3.96 / 1_000_000,
+    "cache_creation": 1.32 / 1_000_000,
+    "cache_read": 0.044 / 1_000_000,
+}
+# Peak windows as half-open ``[start_hour, end_hour)`` in UTC, applied Monday
+# through Friday. Half-open is the reading that makes the two windows tile
+# without overlap: 03:59:59 UTC is peak, 04:00:00 is not. The vendor page
+# states the windows to the hour and says nothing finer, so hour granularity
+# is exact rather than a rounding.
+_DEEPSEEK_PEAK_WINDOWS_UTC: tuple[tuple[int, int], ...] = ((1, 4), (6, 10))
+# Canonical model id -> (off-peak card, peak card).
+_DEEPSEEK_TIERS: dict[str, tuple[dict[str, float], dict[str, float]]] = {
+    "deepseek-v4-flash": (
+        _TIER_DEEPSEEK_FLASH_OFF_PEAK,
+        _TIER_DEEPSEEK_FLASH_PEAK,
+    ),
+    "deepseek-v4-pro": (
+        _TIER_DEEPSEEK_PRO_OFF_PEAK,
+        _TIER_DEEPSEEK_PRO_PEAK,
+    ),
 }
 # MiniMax M3 pay-as-you-go rates in USD per million tokens. Prompt size is the
 # complete request input, including cache creation and cache read tokens.
@@ -263,8 +324,15 @@ PRICING: dict[str, dict[str, float]] = {
     # DeepSeek V4 (api.deepseek.com). OpenRouter's ``deepseek/…`` ids resolve
     # here too via get_pricing's vendor-prefix strip — consistent with how
     # every proxied model is priced at its upstream rate.
-    "deepseek-v4-flash": _TIER_DEEPSEEK_FLASH,
-    "deepseek-v4-pro": _TIER_DEEPSEEK_PRO,
+    # VALUES UNUSED, same as the gpt-5.6-luna rows below: these two entries
+    # are membership gates for ``get_pricing``'s ``model in PRICING`` checks,
+    # and the live card is picked by request time in ``_get_exact_pricing``,
+    # which returns before reaching ``PRICING.get(model)``. They point at the
+    # off-peak card so that anything reading the table directly (the legacy
+    # ``services.cost_tracker`` fallback path) gets the rate that covers 133
+    # of every 168 hours rather than a number picked for tidiness.
+    "deepseek-v4-flash": _TIER_DEEPSEEK_FLASH_OFF_PEAK,
+    "deepseek-v4-pro": _TIER_DEEPSEEK_PRO_OFF_PEAK,
     "MiniMax-M3": _TIER_MINIMAX_M3_STANDARD,
     "MiniMax-M2.7": _TIER_MINIMAX_M27,
     # Meta Muse Spark (api.meta.ai)
@@ -322,11 +390,36 @@ _FAMILY_PREFIXES: list[tuple[str, dict[str, float]]] = [
 ]
 
 
+def is_deepseek_peak(request_time: float | None = None) -> bool:
+    """True if ``request_time`` falls inside DeepSeek's peak-rate schedule.
+
+    ``request_time`` is POSIX epoch seconds (what ``time.time()`` returns);
+    ``None`` means now. Peak is 01:00-04:00 and 06:00-10:00 UTC, Monday
+    through Friday, evaluated in UTC — the vendor's schedule is stated in UTC
+    and does not follow the caller's local calendar, so a Friday 23:00
+    US/Pacific request is a Saturday in UTC and off-peak.
+
+    Public because it is the only way to explain a DeepSeek cost figure
+    without re-deriving the schedule: the same request costs 2x more at
+    07:00 UTC on a Tuesday than at 07:00 UTC on a Sunday, and a caller that
+    wants to say so in a status bar or a ``/cost`` breakdown should ask here
+    rather than reimplement the windows.
+    """
+    ts = time.time() if request_time is None else request_time
+    when = datetime.fromtimestamp(ts, timezone.utc)
+    if when.weekday() > 4:  # Saturday/Sunday — off-peak all day.
+        return False
+    return any(
+        start <= when.hour < end for start, end in _DEEPSEEK_PEAK_WINDOWS_UTC
+    )
+
+
 def _get_exact_pricing(
     model: str,
     *,
     input_tokens: int,
     service_tier: str,
+    request_time: float | None,
 ) -> dict[str, float] | None:
     # Context-tiered models: the published rate depends on how big THIS
     # request's prompt is. ``model`` is already the canonical bare key here
@@ -337,6 +430,15 @@ def _get_exact_pricing(
             if input_tokens > _GPT_56_LUNA_INPUT_TIER_LIMIT
             else _TIER_GPT_56_LUNA
         )
+    # Time-tiered models: the published rate depends on WHEN the request was
+    # sent and on nothing inside it. Neither existing axis can carry this —
+    # ``input_tokens`` is prompt size, and ``service_tier`` is whatever the
+    # provider declared in its response (DeepSeek declares nothing, so it
+    # always resolves to "standard").
+    deepseek = _DEEPSEEK_TIERS.get(model)
+    if deepseek is not None:
+        off_peak, peak = deepseek
+        return peak if is_deepseek_peak(request_time) else off_peak
     if model != "MiniMax-M3":
         return PRICING.get(model)
 
@@ -359,12 +461,23 @@ def get_pricing(
     *,
     input_tokens: int = 0,
     service_tier: str = "standard",
+    request_time: float | None = None,
 ) -> dict[str, float] | None:
     """Return per-token prices for ``model``, or ``None`` if unknown.
 
     ``input_tokens`` is the complete prompt size for one request. MiniMax M3
     uses it with ``service_tier`` to select its standard/priority and
     short/long-context rate.
+
+    ``request_time`` is POSIX epoch seconds for when the request was sent;
+    DeepSeek V4 uses it to pick its peak or off-peak card (see
+    ``is_deepseek_peak``). ``None`` means now, which is correct for the live
+    path — ``cost_tracker.record_api_usage`` prices a response the moment it
+    arrives — and an approximation anywhere a stored usage record is repriced
+    later. Callers holding a real timestamp should pass it. Note that a
+    request straddling a boundary is priced by the single instant handed in;
+    the vendor page does not say whether it bills by request start or by
+    completion, and both are within one turn of each other.
 
     Lookup order:
       1. Exact match in ``PRICING``.
@@ -388,6 +501,7 @@ def get_pricing(
             model,
             input_tokens=input_tokens,
             service_tier=service_tier,
+            request_time=request_time,
         )
     if "/" in model:
         bare = model.split("/", 1)[1]
@@ -396,6 +510,7 @@ def get_pricing(
                 bare,
                 input_tokens=input_tokens,
                 service_tier=service_tier,
+                request_time=request_time,
             )
         for prefix, pricing in _FAMILY_PREFIXES:
             if bare.startswith(prefix):
@@ -413,8 +528,13 @@ def is_known_pricing(model: str) -> bool:
     return get_pricing(model) is not None
 
 
-def compute_cost(model: str, usage: dict[str, Any]) -> float:
-    """Compute USD cost for a usage record. Pure function.
+def compute_cost(
+    model: str,
+    usage: dict[str, Any],
+    *,
+    request_time: float | None = None,
+) -> float:
+    """Compute USD cost for a usage record.
 
     Returns 0.0 when the model has no pricing entry (rather than
     guessing with ``DEFAULT_PRICING``). The legacy cost-tracker facade
@@ -425,6 +545,16 @@ def compute_cost(model: str, usage: dict[str, Any]) -> float:
     ``cache_creation_input_tokens``, and ``cache_read_input_tokens``
     from ``usage``. Missing keys default to zero so callers that only
     track input+output still get a sensible result.
+
+    ``request_time`` (POSIX epoch seconds) is forwarded to ``get_pricing``
+    for DeepSeek's peak/off-peak card; ``None`` prices at the current clock.
+    Callers that recompute from an AGGREGATED ``model_usage`` block rather
+    than from one response — ``cost_restore.build_cost_block``,
+    ``eval/harbor/advisor_cost.py`` — have no per-request time to pass and
+    inherit the same aggregate inexactness they already carry for the
+    context tier: a session spanning a peak boundary gets priced entirely on
+    one side of it. Fixing that needs per-request cost records, not a
+    different default here.
     """
     input_tokens = int(usage.get("input_tokens", 0) or 0)
     output_tokens = int(usage.get("output_tokens", 0) or 0)
@@ -435,6 +565,7 @@ def compute_cost(model: str, usage: dict[str, Any]) -> float:
         model,
         input_tokens=prompt_tokens,
         service_tier=str(usage.get("service_tier") or "standard"),
+        request_time=request_time,
     )
     if pricing is None:
         return 0.0
@@ -521,6 +652,7 @@ __all__ = [
     "PRICING",
     "DEFAULT_PRICING",
     "get_pricing",
+    "is_deepseek_peak",
     "is_known_pricing",
     "compute_cost",
     "compute_session_cost",
