@@ -46,6 +46,11 @@ def _utc(year: int, month: int, day: int, hour: int, minute: int = 0,
 # 2026-08-30 a Sunday.
 MON, FRI, SAT, SUN = 24, 28, 29, 30
 
+# One instant on each side of the schedule, for the tests that care which
+# card is in force rather than where the boundaries are.
+OFF_PEAK_TS = _utc(2026, 8, MON, 12)
+PEAK_TS = _utc(2026, 8, MON, 2)
+
 
 # --------------------------------------------------------------------------- #
 # The schedule
@@ -105,13 +110,38 @@ def test_off_peak_covers_133_of_168_hours() -> None:
     assert 7 * 24 - peak_hours == 133
 
 
-def test_defaults_to_now() -> None:
-    """``request_time=None`` means "price at the current clock" — correct for
-    the live path, which prices a response the moment it arrives."""
-    import time
+class _FakeClock:
+    """Stands in for the ``time`` module inside ``services.pricing`` only.
 
-    now = time.time()
-    assert is_deepseek_peak() is is_deepseek_peak(now)
+    Patching the name in that module's namespace rather than ``time.time``
+    itself keeps the fake off pytest's own clock.
+    """
+
+    def __init__(self, ts: float) -> None:
+        self.ts = ts
+
+    def time(self) -> float:
+        return self.ts
+
+
+def test_omitting_request_time_reads_the_clock(monkeypatch) -> None:
+    """``request_time=None`` means "price at the current clock", which is what
+    makes the live path correct without passing anything: cost is computed the
+    moment a response arrives. Pinned end to end — through
+    ``is_deepseek_peak``, ``get_pricing`` and ``compute_cost`` — because a
+    default that silently stopped reaching the clock would leave every
+    production call site on one card with nothing failing."""
+    usage = {"input_tokens": 1_000_000}
+
+    monkeypatch.setattr("src.services.pricing.time", _FakeClock(PEAK_TS))
+    assert is_deepseek_peak() is True
+    assert get_pricing("deepseek-v4-pro")["input"] == 1.32 / 1_000_000
+    assert compute_cost("deepseek-v4-pro", usage) == pytest.approx(1.32)
+
+    monkeypatch.setattr("src.services.pricing.time", _FakeClock(OFF_PEAK_TS))
+    assert is_deepseek_peak() is False
+    assert get_pricing("deepseek-v4-pro")["input"] == 0.66 / 1_000_000
+    assert compute_cost("deepseek-v4-pro", usage) == pytest.approx(0.66)
 
 
 # --------------------------------------------------------------------------- #
@@ -130,10 +160,6 @@ PUBLISHED = {
         "peak": {"input": 1.32, "output": 3.96, "cache_read": 0.044},
     },
 }
-
-OFF_PEAK_TS = _utc(2026, 8, MON, 12)
-PEAK_TS = _utc(2026, 8, MON, 2)
-
 
 @pytest.mark.parametrize("model", MODELS)
 @pytest.mark.parametrize("window", ["off_peak", "peak"])
