@@ -85,6 +85,11 @@ class CompactionTelemetryData:
     post_compact_token_count: int = 0
     compaction_cost_usd: float = 0.0
     cache_hit_rate_before: float | None = None
+    # PR 3: Post-compaction measurements (filled in by log_post_compaction_telemetry
+    # on the first turn after compaction); read by /context's cache-hostile warning.
+    cache_hit_rate_after: float | None = None
+    estimated_cost_delta_usd: float | None = None
+    cost_increased: bool = False
     model: str | None = None
 
 
@@ -829,6 +834,28 @@ def set_compaction_telemetry_data(data: CompactionTelemetryData | None) -> None:
     _STATE.compaction_telemetry_data = data
 
 
+def update_compaction_telemetry(
+    cache_hit_rate_after: float | None = None,
+    estimated_cost_delta_usd: float | None = None,
+    cost_increased: bool | None = None,
+) -> None:
+    """Update the stored compaction telemetry with post-compaction measurements.
+
+    Called by log_post_compaction_telemetry() on the first turn after a
+    compaction; fills in the fields /context reads for the cache-hostile
+    warning. No-op if no telemetry is currently stored.
+    """
+    data = _STATE.compaction_telemetry_data
+    if data is None:
+        return
+    if cache_hit_rate_after is not None:
+        data.cache_hit_rate_after = cache_hit_rate_after
+    if estimated_cost_delta_usd is not None:
+        data.estimated_cost_delta_usd = estimated_cost_delta_usd
+    if cost_increased is not None:
+        data.cost_increased = cost_increased
+
+
 def get_additional_directories_for_clawcodex_md() -> list[str]:
     return _STATE.additional_directories_for_clawcodex_md
 
@@ -1298,6 +1325,7 @@ __all__ = [
     "consume_post_compaction",
     "get_compaction_telemetry_data",
     "set_compaction_telemetry_data",
+    "update_compaction_telemetry",
     "get_additional_directories_for_clawcodex_md",
     "set_additional_directories_for_clawcodex_md",
     # Model

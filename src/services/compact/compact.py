@@ -55,6 +55,11 @@ from .post_compact_attachments import (
 
 logger = logging.getLogger(__name__)
 
+# Estimated summary output tokens for cost-delta estimation when actual
+# compaction usage is unavailable. Mirrors ESTIMATED_SUMMARY_OUTPUT_TOKENS
+# in autocompact.py (p99.99 summary size ≈ 17.4k, buffered to 20k).
+_COMPACT_SUMMARY_OUTPUT_TOKENS_ESTIMATE = 20_000
+
 # =============================================================================
 # Compaction Telemetry (PR 3)
 # =============================================================================
@@ -114,13 +119,19 @@ def _estimate_compaction_cost_delta(
     model: str,
 ) -> float | None:
     """
-    Estimate the cost delta from compaction.
+    Estimate the net cost delta introduced by a compaction event.
 
-    Positive = compaction increased cost (cache-hostile).
-    Negative = compaction decreased cost (cache-friendly).
+    Positive = compaction increased effective cost (cache-hostile): the
+    one-time cost of the summary call outweighs what the shed tokens would
+    have cost to re-send.
+    Negative = compaction decreased effective cost (cache-friendly).
+
+    ``get_pricing()`` returns per-token rates (already divided by 1M
+    upstream), so they multiply token counts directly — same convention as
+    ``compute_cost()`` in pricing.py.
     """
     try:
-        from src.services.pricing import get_pricing, compute_cost
+        from src.services.pricing import get_pricing
 
         pricing = get_pricing(model)
         if not pricing:
@@ -133,6 +144,10 @@ def _estimate_compaction_cost_delta(
         if cache_read_rate == 0:
             cache_read_rate = input_rate * 0.1  # typical 90% discount
 
+        output_rate = pricing.get("output", 0)
+        if output_rate == 0:
+            output_rate = input_rate * 3  # typical 3x ratio
+
         tokens_shed = pre_compact_tokens - post_compact_tokens
         if tokens_shed <= 0:
             return None
@@ -141,18 +156,19 @@ def _estimate_compaction_cost_delta(
         # based on the cache hit rate before compaction
         hit_rate_before = (cache_hit_rate_before or 0) / 100.0
 
-        # Cost of shed tokens at old hit rate
+        # Ongoing savings: what the shed tokens would have cost per turn at
+        # the old hit rate. Rates are per-token; multiply directly (do NOT
+        # divide by 1e6 here — get_pricing() already returns per-token rates).
         uncached_shed = tokens_shed * (1 - hit_rate_before)
         cached_shed = tokens_shed * hit_rate_before
-        cost_shed = (uncached_shed * input_rate + cached_shed * cache_read_rate) / 1_000_000
+        savings_per_turn = uncached_shed * input_rate + cached_shed * cache_read_rate
 
-        # Cost of compaction summary call (already tracked in compaction_usage)
-        # This is a separate API call that we already pay for
+        # One-time cost of the compaction summary call itself, approximated
+        # from its output size at the model's output rate. (Actual measured
+        # usage is tracked separately as compaction_usage/compaction_cost_usd.)
+        summary_call_cost = _COMPACT_SUMMARY_OUTPUT_TOKENS_ESTIMATE * output_rate
 
-        # The delta is the cost of the compaction call minus the ongoing
-        # savings from not sending those tokens in future turns
-        # For now, just return the cost of shed tokens as a baseline
-        return cost_shed
+        return summary_call_cost - savings_per_turn
     except Exception:
         return None
 
@@ -290,6 +306,21 @@ def log_post_compaction_telemetry(
                 cache_hit_rate_after,
                 hit_rate_delta,
             )
+
+    # Persist post-compaction measurements back into the stored telemetry so
+    # /context's cache-hostile warning can render them (previously these were
+    # computed and logged here but never written to state, so /context never
+    # saw them).
+    try:
+        from src.bootstrap.state import update_compaction_telemetry
+
+        update_compaction_telemetry(
+            cache_hit_rate_after=cache_hit_rate_after,
+            estimated_cost_delta_usd=estimated_delta,
+            cost_increased=cost_increased,
+        )
+    except Exception:
+        logger.debug("failed to update compaction telemetry in state", exc_info=True)
 
 # Maximum output tokens for the summary model
 COMPACT_MAX_OUTPUT_TOKENS = 8_192

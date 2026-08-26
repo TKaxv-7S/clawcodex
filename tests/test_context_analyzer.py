@@ -181,5 +181,6 @@ class TestFormatContextAsMarkdown(unittest.TestCase):
         self.assertIn("### Memory Files", markdown)
         self.assertIn("CLAWCODEX.md", markdown)
 
-    if __name__ == "__main__":
+
+if __name__ == "__main__":
     unittest.main()
