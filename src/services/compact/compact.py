@@ -55,6 +55,273 @@ from .post_compact_attachments import (
 
 logger = logging.getLogger(__name__)
 
+# Estimated summary output tokens for cost-delta estimation when actual
+# compaction usage is unavailable. Mirrors ESTIMATED_SUMMARY_OUTPUT_TOKENS
+# in autocompact.py (p99.99 summary size ≈ 17.4k, buffered to 20k).
+_COMPACT_SUMMARY_OUTPUT_TOKENS_ESTIMATE = 20_000
+
+# =============================================================================
+# Compaction Telemetry (PR 3)
+# =============================================================================
+
+@dataclass
+class CompactionTelemetry:
+    """Telemetry data for a compaction event."""
+    trigger: str
+    tokens_shed: int
+    pre_compact_token_count: int
+    post_compact_token_count: int
+    compaction_cost_usd: float
+    cache_hit_rate_before: float | None = None
+    cache_hit_rate_after: float | None = None
+    estimated_cost_delta_usd: float | None = None
+    cost_increased: bool = False
+
+
+def _get_recent_cache_hit_rate(model: str | None = None) -> float | None:
+    """
+    Calculate the cache hit rate from recent API usage.
+
+    Returns cache_read / (input + cache_creation + cache_read) as a percentage,
+    or None if no usage data is available.
+    """
+    try:
+        from src.bootstrap.state import get_model_usage
+
+        model_usage = get_model_usage()
+        if not model_usage:
+            return None
+
+        # If model specified, use that; otherwise sum across all models
+        if model and model in model_usage:
+            usages = [model_usage[model]]
+        else:
+            usages = list(model_usage.values())
+
+        total_input = sum(u.input_tokens for u in usages)
+        total_cache_creation = sum(u.cache_creation_input_tokens for u in usages)
+        total_cache_read = sum(u.cache_read_input_tokens for u in usages)
+
+        prompt_total = total_input + total_cache_creation + total_cache_read
+        if prompt_total == 0:
+            return None
+
+        return (total_cache_read / prompt_total) * 100.0
+    except Exception:
+        return None
+
+
+def _estimate_compaction_cost_delta(
+    pre_compact_tokens: int,
+    post_compact_tokens: int,
+    cache_hit_rate_before: float | None,
+    cache_hit_rate_after: float | None,
+    model: str,
+) -> float | None:
+    """
+    Estimate the net cost delta introduced by a compaction event.
+
+    Positive = compaction increased effective cost (cache-hostile): the
+    one-time cost of the summary call outweighs what the shed tokens would
+    have cost to re-send.
+    Negative = compaction decreased effective cost (cache-friendly).
+
+    ``get_pricing()`` returns per-token rates (already divided by 1M
+    upstream), so they multiply token counts directly — same convention as
+    ``compute_cost()`` in pricing.py.
+    """
+    try:
+        from src.services.pricing import get_pricing
+
+        pricing = get_pricing(model)
+        if not pricing:
+            return None
+
+        input_rate = pricing.get("input", 0)
+        cache_read_rate = pricing.get("cache_read", 0)
+
+        # If cache_read rate is not explicitly set, it's often a fraction of input rate
+        if cache_read_rate == 0:
+            cache_read_rate = input_rate * 0.1  # typical 90% discount
+
+        output_rate = pricing.get("output", 0)
+        if output_rate == 0:
+            output_rate = input_rate * 3  # typical 3x ratio
+
+        tokens_shed = pre_compact_tokens - post_compact_tokens
+        if tokens_shed <= 0:
+            return None
+
+        # Estimate: tokens shed would have been a mix of cached and uncached
+        # based on the cache hit rate before compaction
+        hit_rate_before = (cache_hit_rate_before or 0) / 100.0
+
+        # Ongoing savings: what the shed tokens would have cost per turn at
+        # the old hit rate. Rates are per-token; multiply directly (do NOT
+        # divide by 1e6 here — get_pricing() already returns per-token rates).
+        uncached_shed = tokens_shed * (1 - hit_rate_before)
+        cached_shed = tokens_shed * hit_rate_before
+        savings_per_turn = uncached_shed * input_rate + cached_shed * cache_read_rate
+
+        # One-time cost of the compaction summary call itself, approximated
+        # from its output size at the model's output rate. (Actual measured
+        # usage is tracked separately as compaction_usage/compaction_cost_usd.)
+        summary_call_cost = _COMPACT_SUMMARY_OUTPUT_TOKENS_ESTIMATE * output_rate
+
+        return summary_call_cost - savings_per_turn
+    except Exception:
+        return None
+
+
+def _log_compaction_telemetry(telemetry: CompactionTelemetry) -> None:
+    """Log compaction telemetry with warning if cost increased."""
+    logger.info(
+        "compaction_telemetry: trigger=%s tokens_shed=%d pre=%d post=%d "
+        "compaction_cost=$%.6f hit_before=%.1f%% hit_after=%s delta=$%.6f increased=%s",
+        telemetry.trigger,
+        telemetry.tokens_shed,
+        telemetry.pre_compact_token_count,
+        telemetry.post_compact_token_count,
+        telemetry.compaction_cost_usd,
+        telemetry.cache_hit_rate_before if telemetry.cache_hit_rate_before is not None else -1,
+        f"{telemetry.cache_hit_rate_after:.1f}%" if telemetry.cache_hit_rate_after is not None else "pending",
+        telemetry.estimated_cost_delta_usd if telemetry.estimated_cost_delta_usd is not None else -1,
+        telemetry.cost_increased,
+    )
+
+    if telemetry.cost_increased:
+        logger.warning(
+            "CACHE-HOSTILE COMPACTION: trigger=%s shed %d tokens but increased "
+            "effective cost (delta=$%.6f). Pre-hit=%.1f%%, Post-hit=%.1f%%. "
+            "Consider: smaller compaction window, different model, or disable auto-compact.",
+            telemetry.trigger,
+            telemetry.tokens_shed,
+            telemetry.estimated_cost_delta_usd or 0,
+            telemetry.cache_hit_rate_before or 0,
+            telemetry.cache_hit_rate_after or 0,
+        )
+
+
+def _calculate_cache_hit_rate_from_usage(usage: dict[str, Any]) -> float | None:
+    """
+    Calculate cache hit rate from a single API response's usage dict.
+
+    Handles both Anthropic-native (cache_read_input_tokens) and
+    OpenAI-compatible (prompt_tokens_details.cached_tokens) formats.
+    """
+    try:
+        # Anthropic-native format
+        if "cache_read_input_tokens" in usage:
+            input_tokens = int(usage.get("input_tokens", 0) or 0)
+            cache_creation = int(usage.get("cache_creation_input_tokens", 0) or 0)
+            cache_read = int(usage.get("cache_read_input_tokens", 0) or 0)
+            prompt_total = input_tokens + cache_creation + cache_read
+            if prompt_total == 0:
+                return None
+            return (cache_read / prompt_total) * 100.0
+
+        # OpenAI-compatible format
+        if "prompt_tokens_details" in usage:
+            prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+            cached = usage.get("prompt_tokens_details", {})
+            cache_read = int(cached.get("cached_tokens", 0) if isinstance(cached, dict) else 0)
+            # OpenAI doesn't have cache_creation, so prompt_total = prompt_tokens
+            if prompt_tokens == 0:
+                return None
+            return (cache_read / prompt_tokens) * 100.0
+
+        return None
+    except Exception:
+        return None
+
+
+def log_post_compaction_telemetry(
+    trigger: str,
+    tokens_shed: int,
+    pre_compact_token_count: int,
+    post_compact_token_count: int,
+    compaction_cost_usd: float,
+    cache_hit_rate_before: float | None,
+    response_usage: dict[str, Any],
+    model: str,
+) -> None:
+    """
+    Log telemetry for the first turn after compaction.
+
+    Called when consume_post_compaction() returns True. Measures the
+    cache hit rate from the first post-compaction API response and
+    logs updated telemetry.
+    """
+    cache_hit_rate_after = _calculate_cache_hit_rate_from_usage(response_usage)
+
+    # Recalculate cost delta with actual post-compaction hit rate
+    estimated_delta = _estimate_compaction_cost_delta(
+        pre_compact_token_count,
+        post_compact_token_count,
+        cache_hit_rate_before,
+        cache_hit_rate_after,
+        model,
+    )
+
+    cost_increased = (
+        estimated_delta is not None
+        and estimated_delta > compaction_cost_usd
+    )
+
+    logger.info(
+        "compaction_telemetry_post: trigger=%s tokens_shed=%d pre=%d post=%d "
+        "compaction_cost=$%.6f hit_before=%.1f%% hit_after=%.1f%% delta=$%.6f increased=%s",
+        trigger,
+        tokens_shed,
+        pre_compact_token_count,
+        post_compact_token_count,
+        compaction_cost_usd,
+        cache_hit_rate_before if cache_hit_rate_before is not None else -1,
+        cache_hit_rate_after if cache_hit_rate_after is not None else -1,
+        estimated_delta if estimated_delta is not None else -1,
+        cost_increased,
+    )
+
+    if cost_increased:
+        logger.warning(
+            "CACHE-HOSTILE COMPACTION (confirmed): trigger=%s shed %d tokens "
+            "but increased effective cost (delta=$%.6f). Pre-hit=%.1f%%, "
+            "Post-hit=%.1f%%. Consider: smaller compaction window, different "
+            "model, or disable auto-compact.",
+            trigger,
+            tokens_shed,
+            estimated_delta or 0,
+            cache_hit_rate_before or 0,
+            cache_hit_rate_after or 0,
+        )
+    elif cache_hit_rate_after is not None and cache_hit_rate_before is not None:
+        hit_rate_delta = cache_hit_rate_after - cache_hit_rate_before
+        if hit_rate_delta < -5:  # significant drop
+            logger.warning(
+                "COMPACTION CACHE HIT RATE DROP: trigger=%s hit rate fell "
+                "%.1f%% -> %.1f%% (delta=%.1f%%). Cache prefix may have been "
+                "disturbed by compaction.",
+                trigger,
+                cache_hit_rate_before,
+                cache_hit_rate_after,
+                hit_rate_delta,
+            )
+
+    # Persist post-compaction measurements back into the stored telemetry so
+    # /context's cache-hostile warning can render them (previously these were
+    # computed and logged here but never written to state, so /context never
+    # saw them).
+    try:
+        from src.bootstrap.state import update_compaction_telemetry
+
+        update_compaction_telemetry(
+            cache_hit_rate_after=cache_hit_rate_after,
+            estimated_cost_delta_usd=estimated_delta,
+            cost_increased=cost_increased,
+        )
+    except Exception:
+        logger.debug("failed to update compaction telemetry in state", exc_info=True)
+
 # Maximum output tokens for the summary model
 COMPACT_MAX_OUTPUT_TOKENS = 8_192
 
@@ -524,6 +791,51 @@ async def compact_conversation(
         f"Pre-compact: {pre_compact_tokens:,} tokens."
     )
 
+    # --- PR 3: Compaction Telemetry ---
+    compaction_cost_usd = 0.0
+    if compaction_usage:
+        try:
+            from src.services.pricing import compute_cost
+            compaction_cost_usd = compute_cost(context.model, compaction_usage)
+        except Exception:
+            pass
+
+    cache_hit_rate_before = _get_recent_cache_hit_rate(context.model)
+
+    estimated_delta = _estimate_compaction_cost_delta(
+        pre_compact_tokens,
+        post_compact_tokens,
+        cache_hit_rate_before,
+        None,  # post-compaction hit rate measured on next turn
+        context.model,
+    )
+
+    telemetry = CompactionTelemetry(
+        trigger=context.trigger,
+        tokens_shed=tokens_saved,
+        pre_compact_token_count=pre_compact_tokens,
+        post_compact_token_count=post_compact_tokens,
+        compaction_cost_usd=compaction_cost_usd,
+        cache_hit_rate_before=cache_hit_rate_before,
+        estimated_cost_delta_usd=estimated_delta,
+        cost_increased=(estimated_delta is not None and estimated_delta > compaction_cost_usd),
+    )
+
+    _log_compaction_telemetry(telemetry)
+
+    # Store telemetry for post-compaction measurement
+    from src.bootstrap.state import set_compaction_telemetry_data, CompactionTelemetryData
+    set_compaction_telemetry_data(CompactionTelemetryData(
+        trigger=telemetry.trigger,
+        tokens_shed=telemetry.tokens_shed,
+        pre_compact_token_count=telemetry.pre_compact_token_count,
+        post_compact_token_count=telemetry.post_compact_token_count,
+        compaction_cost_usd=telemetry.compaction_cost_usd,
+        cache_hit_rate_before=telemetry.cache_hit_rate_before,
+        model=context.model,
+    ))
+    # --- End PR 3 Telemetry ---
+
     return CompactionResult(
         boundary_marker=boundary_msg,
         summary_messages=[summary_msg],
@@ -696,13 +1008,53 @@ async def partial_compact_conversation(
 
     suppress_compact_warning()
 
+    # --- PR 3: Compaction Telemetry ---
+    compaction_cost_usd = 0.0
+    if compaction_usage:
+        try:
+            from src.services.pricing import compute_cost
+            compaction_cost_usd = compute_cost(context.model, compaction_usage)
+        except Exception:
+            pass
+
+    cache_hit_rate_before = _get_recent_cache_hit_rate(context.model)
+
+    # For partial compaction, tokens_saved = pre_compact_tokens (entire summarized portion)
+    # post_compact_tokens is just the summary message
+    post_api_msgs = [{"role": "user", "content": formatted_summary}]
+    post_compact_tokens = count_messages_tokens(post_api_msgs)
+    tokens_saved = max(0, pre_compact_tokens - post_compact_tokens)
+
+    estimated_delta = _estimate_compaction_cost_delta(
+        pre_compact_tokens,
+        post_compact_tokens,
+        cache_hit_rate_before,
+        None,
+        context.model,
+    )
+
+    telemetry = CompactionTelemetry(
+        trigger=f"{context.trigger}:{direction}",
+        tokens_shed=tokens_saved,
+        pre_compact_token_count=pre_compact_tokens,
+        post_compact_token_count=post_compact_tokens,
+        compaction_cost_usd=compaction_cost_usd,
+        cache_hit_rate_before=cache_hit_rate_before,
+        estimated_cost_delta_usd=estimated_delta,
+        cost_increased=(estimated_delta is not None and estimated_delta > compaction_cost_usd),
+    )
+
+    _log_compaction_telemetry(telemetry)
+    # --- End PR 3 Telemetry ---
+
     return CompactionResult(
         boundary_marker=boundary_msg,
         summary_messages=[summary_msg],
         messages_to_keep=list(messages_to_keep),
         attachments=attachments,
         pre_compact_token_count=pre_compact_tokens,
+        post_compact_token_count=post_compact_tokens,
         compaction_usage=compaction_usage,
         trigger=context.trigger,
-        tokens_saved=pre_compact_tokens,
+        tokens_saved=tokens_saved,
     )
