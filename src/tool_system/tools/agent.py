@@ -50,6 +50,7 @@ from src.agent.fork_subagent import (
 )
 from src.agent.prompt import get_agent_prompt, get_agent_system_prompt
 from src.agent.run_agent import RunAgentParams, run_agent
+from src.services.swarm.agent_supervisor import AgentAdmissionError
 
 logger = logging.getLogger(__name__)
 
@@ -407,6 +408,15 @@ def make_agent_tool(
         except Exception:  # noqa: BLE001
             logger.debug("subagent model preview failed", exc_info=True)
 
+        # Depth: query_tracking is None on the root session, and
+        # build_subagent_context sets depth = parent_depth + 1, so a top-level
+        # delegation is depth 0. Read it the same way here so the number the
+        # supervisor caps is the number the child will actually carry — and so
+        # the progress emit below can report it (the overlay reads `depth` off
+        # the event and was defaulting every agent to 0, flattening its tree).
+        _tracking = getattr(context, "query_tracking", None)
+        _depth = (_tracking.depth + 1) if _tracking is not None else 0
+
         # Stream the subagent's live progress to the UI when the host wired a
         # hook (agent-server only). run_agent calls on_message per message, so
         # this covers both the sync and background paths. Purely additive — no
@@ -429,8 +439,15 @@ def make_agent_tool(
                     if acts:
                         last = acts[-1]
                         activity = last.activity_description or last.tool_name
+                    # Feed the supervisor the same counter the HUD shows, so
+                    # `delegation.status` reports real progress instead of a
+                    # tool_count frozen at 0 for the agent's whole lifetime.
+                    context.agent_supervisor.set_tool_count(
+                        agent_id, _tracker.tool_use_count,
+                    )
                     _emit_progress({
                         "agent_id": agent_id,
+                        "depth": _depth,
                         "name": agent_name,
                         "description": description,
                         "subagent_type": subagent_type,
@@ -445,18 +462,58 @@ def make_agent_tool(
 
             run_params.on_message = _on_subagent_message
 
-        if is_async:
-            return _launch_async_agent(
-                run_params=run_params,
-                context=context,
-                agent_id=agent_id,
-                description=description,
-                prompt=prompt,
-                agent_type=agent_def.agent_type,
-                agent_name=agent_name,
-                resolved_model=resolved_model,
+        # ── Admission control ────────────────────────────────────────────
+        # One session-scoped supervisor gates BOTH spawn paths. The abort
+        # controller is built here rather than inside the background wrapper so
+        # a *foreground* delegation also has a reachable abort handle — that is
+        # what makes `subagent.interrupt` work for sync agents, which never
+        # enter runtime_tasks and previously could not be stopped at all.
+        from src.utils.abort_controller import AbortController as _AbortController
+
+        if run_params.abort_controller is None:
+            run_params.abort_controller = _AbortController()
+
+        try:
+            context.agent_supervisor.admit(
+                subagent_id=agent_id,
+                # The spawning agent's own id — None on the root session, which
+                # is what makes a top-level delegation a tree root. NOT
+                # query_tracking.chain_id: that is a fresh uuid per child
+                # context, so it matches no subagent_id and would orphan every
+                # row the clients try to nest.
+                parent_id=getattr(context, "agent_id", None),
+                depth=_depth,
+                goal=description or (prompt or "")[:80],
+                model=resolved_model,
+                abort_controller=run_params.abort_controller,
             )
-        else:
+        except AgentAdmissionError as exc:
+            # Refusal is a normal outcome the model must react to, not a crash:
+            # return it as a tool error so the turn continues and the model can
+            # do the work itself or wait for a slot.
+            return ToolResult(
+                name=AGENT_TOOL_NAME,
+                output={"status": "refused", "reason": exc.reason, "error": str(exc)},
+                is_error=True,
+            )
+
+        # A launch that fails AFTER admission (a name collision raising
+        # ToolInputError, say) would otherwise strand the slot for the life of
+        # the session — the background wrapper's release only runs once its
+        # lifecycle has started. The sync path releases in its own finally, so
+        # this guard covers the window before either takes over.
+        try:
+            if is_async:
+                return _launch_async_agent(
+                    run_params=run_params,
+                    context=context,
+                    agent_id=agent_id,
+                    description=description,
+                    prompt=prompt,
+                    agent_type=agent_def.agent_type,
+                    agent_name=agent_name,
+                    resolved_model=resolved_model,
+                )
             return _run_sync_agent(
                 run_params=run_params,
                 agent_id=agent_id,
@@ -467,6 +524,9 @@ def make_agent_tool(
                 agent_name=agent_name,
                 resolved_model=resolved_model,
             )
+        except BaseException:
+            context.agent_supervisor.release(agent_id)
+            raise
 
     def _run_sync_agent(
         *,
@@ -527,6 +587,13 @@ def make_agent_tool(
                 status="failed", model=resolved_model,
             )
             raise
+        finally:
+            # The worker has genuinely exited by here (the messages are
+            # collected and finalize_agent_tool has returned), so this is the
+            # earliest honest point to free the slot. Releasing on a status
+            # label instead would let a replacement spawn start while this run
+            # was still on the wire.
+            run_params.parent_context.agent_supervisor.release(agent_id)
 
         # ch13 round-4 (critic M1) — emit a TERMINAL agent_progress so the
         # TUI's subagent HUD marks this subagent complete instead of
@@ -630,9 +697,13 @@ def make_agent_tool(
         # its own internal controller (run_agent.py:291), but now reachable.
         # Setting run_params.abort_controller makes run_agent use THIS one
         # (run_agent.py:286-287) instead of an unreachable internal one.
+        # ``_agent_call`` now builds it before admission so the supervisor holds
+        # the same handle; only direct callers of this helper still land here.
         from src.utils.abort_controller import AbortController as _AbortController
-        _async_abort = _AbortController()
-        run_params.abort_controller = _async_abort
+
+        if run_params.abort_controller is None:
+            run_params.abort_controller = _AbortController()
+        _async_abort = run_params.abort_controller
 
         register_async_agent(
             agent_id=agent_id,
@@ -798,6 +869,10 @@ def make_agent_tool(
                 # not just this backgrounded wrapper.
                 if transcript is not None:
                     transcript.close()
+                # Same contract as the sync path: the slot is held until the
+                # background worker actually stops, including when it stops by
+                # being interrupted.
+                context.agent_supervisor.release(agent_id)
 
         try:
             running_loop = asyncio.get_running_loop()

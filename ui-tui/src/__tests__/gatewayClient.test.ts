@@ -257,6 +257,84 @@ describe('GatewayClient NDJSON adapter', () => {
     proc.line({ response: { request_id: req.request_id, response }, type: 'control_response' })
   }
 
+  // ── delegation control plane ───────────────────────────────────────────────
+  // These three RPCs had no case in request(), so they hit the `default:` arm
+  // and resolved `{}` — the agents overlay's status readout, pause key and
+  // kill key were inert. Each test asserts the control_request that actually
+  // reaches the backend, since a wrong subtype or param name reproduces the
+  // silent no-op exactly.
+
+  it('maps delegation.status onto the delegation_status control', async () => {
+    const p = gw.request('delegation.status', {})
+    const snapshot = {
+      active: [
+        {
+          depth: 1,
+          goal: 'audit the store',
+          model: 'claude-opus-5',
+          parent_id: 'root',
+          started_at: 1_700_000_000,
+          status: 'running',
+          subagent_id: 'a1',
+          tool_count: 4
+        }
+      ],
+      max_concurrent_children: 10,
+      max_spawn_depth: 3,
+      paused: false
+    }
+    await replyToControl('delegation_status', snapshot)
+    await expect(p).resolves.toEqual(snapshot)
+  })
+
+  it('degrades delegation.status to an empty list when the backend does not answer', async () => {
+    // controlQuery resolves null on timeout; the overlay must get a shape it
+    // can read rather than a crash on `.active.map`.
+    const p = gw.request('delegation.status', {})
+    await replyToControl('delegation_status', null)
+    await expect(p).resolves.toEqual({ active: [] })
+  })
+
+  it('forwards an explicit delegation.pause value to the backend', async () => {
+    const p = gw.request('delegation.pause', { paused: true })
+    await replyToControl('delegation_pause', { paused: true })
+    await expect(p).resolves.toEqual({ paused: true })
+
+    const req = seen.find(f => f.request?.subtype === 'delegation_pause')
+    expect(req.request.paused).toBe(true)
+  })
+
+  it('omits paused entirely when the caller states none, asking the backend to flip', async () => {
+    const p = gw.request('delegation.pause', {})
+    await replyToControl('delegation_pause', { paused: true })
+    await expect(p).resolves.toEqual({ paused: true })
+
+    const req = seen.find(f => f.request?.subtype === 'delegation_pause')
+    expect('paused' in req.request).toBe(false)
+  })
+
+  it('maps subagent.interrupt onto subagent_interrupt with the agent id', async () => {
+    const p = gw.request('subagent.interrupt', { subagent_id: 'a1' })
+    await replyToControl('subagent_interrupt', { found: true, subagent_id: 'a1' })
+    await expect(p).resolves.toEqual({ found: true, subagent_id: 'a1' })
+
+    const req = seen.find(f => f.request?.subtype === 'subagent_interrupt')
+    expect(req.request.subagent_id).toBe('a1')
+  })
+
+  it('relays a not-found interrupt instead of reporting a kill that did not happen', async () => {
+    const p = gw.request('subagent.interrupt', { subagent_id: 'ghost' })
+    await replyToControl('subagent_interrupt', { found: false, subagent_id: 'ghost' })
+    await expect(p).resolves.toEqual({ found: false, subagent_id: 'ghost' })
+  })
+
+  it('degrades a silent interrupt to found:false rather than a truthy empty object', async () => {
+    // `{}` would read as a successful kill at the overlay's `r?.found` check.
+    const p = gw.request('subagent.interrupt', { subagent_id: 'a1' })
+    await replyToControl('subagent_interrupt', null)
+    await expect(p).resolves.toEqual({ found: false })
+  })
+
   it('maps /workflows to the workflows control and prints its report', async () => {
     const p = gw.request('slash.exec', { command: 'workflows' })
     await replyToControl('workflows', { ok: true, text: 'deep-research  [running]  (run: wf_1)' })

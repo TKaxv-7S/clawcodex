@@ -1293,6 +1293,27 @@ export class GatewayClient extends EventEmitter {
         return this.controlQuery('worktree_status', {}, WORKTREE_RPC_TIMEOUT_MS).then(
           r => (r ?? { error: 'no response from backend', ok: false }) as T
         )
+      // ── delegation control plane ─────────────────────────────────────────
+      // The agents overlay has called these three since it was written, but
+      // they had no case here, so they fell to the `default:` arm below and
+      // resolved `{}` — the status readout stayed empty and the pause and
+      // interrupt keys did nothing at all. They now reach the supervisor that
+      // both Agent spawn paths register with.
+      case 'delegation.status':
+        return this.controlQuery('delegation_status', {}).then(
+          r => (r ?? { active: [] }) as T
+        )
+      case 'delegation.pause':
+        // `paused` is forwarded only when the caller stated one; omitting it
+        // asks the backend to flip, which is what the overlay's toggle wants.
+        return this.controlQuery(
+          'delegation_pause',
+          p.paused === undefined ? {} : { paused: Boolean(p.paused) }
+        ).then(r => (r ?? {}) as T)
+      case 'subagent.interrupt':
+        return this.controlQuery('subagent_interrupt', {
+          subagent_id: String(p.subagent_id ?? p.id ?? '')
+        }).then(r => (r ?? { found: false }) as T)
       // ── skills hub + /skills subcommands ─────────────────────────────────
       case 'skills.manage': {
         const action = String(p.action ?? 'list')

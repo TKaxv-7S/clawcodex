@@ -12,6 +12,7 @@ import type { ConnectionState } from '../gateway/client.ts'
 import type {
   CommandEntry,
   ContextUsageResult,
+  DelegationStatusResult,
   EffortOptionsResult,
   GeneralSettingsResult,
   ModelOptionsResult,
@@ -55,7 +56,7 @@ export const $sessionLoading = atom<boolean>(false)
 export const $trajectory = atom<TrajectoryState>(emptyTrajectory())
 
 /** Which view the conversation column is showing. */
-export type ConversationTab = 'chat' | 'trajectory'
+export type ConversationTab = 'agents' | 'chat' | 'trajectory'
 
 export const $conversationTab = atom<ConversationTab>('chat')
 
@@ -83,6 +84,19 @@ export const $providers = atom<ProviderListResult>({})
 export const $generalSettings = atom<GeneralSettingsResult>({})
 export const $commands = atom<CommandEntry[]>([])
 export const $contextUsage = atom<ContextUsageResult | null>(null)
+
+/**
+ * Live subagents plus this session's delegation caps.
+ *
+ * Polled from `delegation.status` rather than accumulated from progress
+ * events: the backend supervisor is the only thing that knows about a
+ * *foreground* delegation, and a client that reconstructs the list from the
+ * event stream cannot recover it after a reconnect.
+ *
+ * `null` means "not fetched yet", which the panel renders differently from a
+ * fetched-and-empty session — one is unknown, the other is idle.
+ */
+export const $delegation = atom<DelegationStatusResult | null>(null)
 
 /**
  * Approval mode chosen before any session existed.

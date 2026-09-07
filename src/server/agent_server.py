@@ -930,6 +930,15 @@ class _AgentSession:
         if subtype == "vision":
             self._do_vision_command(request_id, inner.get("arg"))
             return
+        if subtype == "delegation_status":
+            self._do_delegation_status(request_id)
+            return
+        if subtype == "delegation_pause":
+            self._do_delegation_pause(request_id, inner.get("paused"))
+            return
+        if subtype == "subagent_interrupt":
+            self._do_subagent_interrupt(request_id, inner.get("subagent_id"))
+            return
         if subtype == "worktree_status":
             await self._do_worktree_status(request_id)
             return
@@ -3865,6 +3874,60 @@ class _AgentSession:
         from src.utils.worktree_session import WorktreeSession
 
         return WorktreeSession.from_env()
+
+    # ── Delegation control plane ─────────────────────────────────────────
+    #
+    # The TUI has declared these three response shapes in gatewayTypes.ts and
+    # called them from the agents overlay since before any of them existed on
+    # this side; unhandled RPCs resolve to `{}` in gatewayClient, so the
+    # overlay's status, pause, and interrupt controls were silently inert.
+    # These three handlers are the missing backend half, served off the
+    # session-scoped AgentSupervisor that both Agent spawn paths register with.
+
+    def _agent_supervisor(self) -> "Any | None":
+        """The session's supervisor, or None before the tool context exists."""
+        return getattr(self.tool_context, "agent_supervisor", None)
+
+    def _do_delegation_status(self, request_id: object) -> None:
+        """Authoritative live-agent snapshot (``DelegationStatusResponse``)."""
+        supervisor = self._agent_supervisor()
+        if supervisor is None:
+            # Report the caps as absent rather than inventing zeros: a client
+            # that reads 0/0 would render "at capacity" for a session that has
+            # no supervisor at all.
+            self._reply(request_id, {"active": [], "paused": False})
+            return
+        self._reply(request_id, supervisor.snapshot())
+
+    def _do_delegation_pause(self, request_id: object, paused: object) -> None:
+        """Toggle admission of new spawns; echo the resulting state.
+
+        Omitting ``paused`` flips the current value, which is what the
+        overlay's single pause key sends.
+        """
+        supervisor = self._agent_supervisor()
+        if supervisor is None:
+            self._reply(request_id, {"paused": False})
+            return
+        target = (not supervisor.is_paused()) if paused is None else bool(paused)
+        self._reply(request_id, {"paused": supervisor.set_paused(target)})
+
+    def _do_subagent_interrupt(self, request_id: object, subagent_id: object) -> None:
+        """Abort one live subagent. ``found`` is false when the id is not live.
+
+        Reports whether the id was actually live rather than always claiming
+        success — the overlay can be looking at a completed row whose agent has
+        already gone, and telling it "interrupted" would be a lie.
+        """
+        supervisor = self._agent_supervisor()
+        agent_id = str(subagent_id or "")
+        if supervisor is None or not agent_id:
+            self._reply(request_id, {"found": False, "subagent_id": agent_id})
+            return
+        self._reply(request_id, {
+            "found": supervisor.interrupt(agent_id),
+            "subagent_id": agent_id,
+        })
 
     async def _do_worktree_status(self, request_id: object) -> None:
         """Exit-time snapshot for the client's keep/remove decision.
