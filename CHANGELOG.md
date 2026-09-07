@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Agent control plane — live subagent status, pause and interrupt.** A
+  session-scoped supervisor now sees every subagent from both spawn paths
+  (foreground delegations previously registered nowhere, so nothing could list
+  or stop them). The TUI agents overlay's status readout, pause key and kill
+  key are wired to it — they had no backend at all and silently did nothing.
+  The browser client gains an **Agents** tab listing live agents with their
+  model, tool count, age and status, with per-agent interrupt and a
+  session-wide pause. An interrupted agent reports itself as interrupted, not
+  as a completed delegation with partial output.
+- Two admission limits, both configurable: `CLAWCODEX_MAX_CONCURRENT_AGENTS`
+  (default 32 — a runaway backstop, not a scheduling budget) and
+  `CLAWCODEX_MAX_AGENT_DEPTH` (default 3). A refused spawn returns a tool error
+  the model can act on rather than failing the turn.
+
 ### Fixed
 
 - `anthropic` is capped below 1.0. Version 1.0.0 moved the SDK onto `httpx2`,

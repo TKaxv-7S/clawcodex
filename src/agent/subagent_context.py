@@ -252,6 +252,12 @@ def create_subagent_context(
         # the same store the parent queued into.
         runtime_tasks=parent_context.runtime_tasks,
         agent_name_registry=parent_context.agent_name_registry,
+        # Same reason, same sharing rule: the supervisor is the session's
+        # single view of what is live. A child with its own instance would
+        # admit against an empty registry, so nesting would bypass the
+        # capacity cap entirely and the overlay would never see the
+        # grandchildren it spawned.
+        agent_supervisor=parent_context.agent_supervisor,
     )
 
 

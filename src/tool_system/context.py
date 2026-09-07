@@ -9,6 +9,7 @@ from .errors import ToolPermissionError
 from .task_manager import TaskManager
 from src.permissions.types import PermissionAskHandler, ToolPermissionContext
 from src.services.swarm.agent_name_registry import AgentNameRegistry
+from src.services.swarm.agent_supervisor import AgentSupervisor
 from src.task_registry import RuntimeTaskRegistry
 from src.utils.abort_controller import AbortController
 
@@ -132,6 +133,12 @@ class ToolContext:
     #   old terminal holders remain reachable by raw task_id + auto-
     #   resume (WI-7.4).
     agent_name_registry: AgentNameRegistry = field(default_factory=AgentNameRegistry)
+    # Session-scoped admission control + live-agent registry, shared BY
+    # REFERENCE with every child context (subagent_context.py) so one
+    # object sees the whole tree. Both spawn paths register here — the
+    # foreground one has no other home, which is why the overlay could
+    # never see or interrupt a synchronous delegation.
+    agent_supervisor: AgentSupervisor = field(default_factory=AgentSupervisor)
     # Background Bash commands spawned via ``run_in_background: true``.
     # Kept as a deprecated dict-of-dicts compatibility view during the
     # Chunk-B migration cycle; the bash spawn writer now populates

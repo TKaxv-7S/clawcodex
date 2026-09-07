@@ -415,3 +415,45 @@ export interface DirectoryListing {
 
 /** Approval answers the gateway understands (`approval.respond`). */
 export type ApprovalChoice = 'allow' | 'deny' | 'session' | 'always'
+
+// ── delegation control plane ────────────────────────────────────────────────
+
+/** One live subagent in a `delegation.status` snapshot. */
+export interface LiveAgent {
+  /** Nesting level; 0 is a direct child of the root session. */
+  depth?: number
+  /** The task the agent was spawned for — its `description`, else its prompt. */
+  goal?: string
+  model?: null | string
+  parent_id?: null | string
+  /** Unix seconds, from the backend clock. */
+  started_at?: number
+  status?: string
+  subagent_id?: string
+  tool_count?: number
+}
+
+/**
+ * `delegation.status` — the session's authoritative live-agent state.
+ *
+ * Every field is optional because a backend that predates the supervisor
+ * answers with only `active`; the caps are absent rather than zero there, and a
+ * client must not read a missing cap as "at capacity".
+ */
+export interface DelegationStatusResult {
+  active?: LiveAgent[]
+  max_concurrent_children?: number
+  max_spawn_depth?: number
+  paused?: boolean
+}
+
+/** `delegation.pause` — the resulting admission state, echoed back. */
+export interface DelegationPauseResult {
+  paused?: boolean
+}
+
+/** `subagent.interrupt` — `found` is false when the id was not live. */
+export interface SubagentInterruptResult {
+  found?: boolean
+  subagent_id?: string
+}

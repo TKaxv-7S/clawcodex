@@ -50,8 +50,14 @@ from src.agent.fork_subagent import (
 )
 from src.agent.prompt import get_agent_prompt, get_agent_system_prompt
 from src.agent.run_agent import RunAgentParams, run_agent
+from src.services.swarm.agent_supervisor import AgentAdmissionError
 
 logger = logging.getLogger(__name__)
+
+# Strong references to in-flight background lifecycles. asyncio keeps only a
+# weak reference to a bare ``create_task`` result, so without this a task can be
+# collected mid-flight and silently never finish.
+_BACKGROUND_LIFECYCLES: "set[Any]" = set()
 
 
 def _emit_terminal_agent_progress(
@@ -407,6 +413,13 @@ def make_agent_tool(
         except Exception:  # noqa: BLE001
             logger.debug("subagent model preview failed", exc_info=True)
 
+        # Depth: query_tracking is None on the root session, and
+        # create_subagent_context sets depth = parent_depth + 1, so a top-level
+        # delegation is depth 0. Read it the same way here so the number the
+        # supervisor caps is the number the child will actually carry.
+        _tracking = getattr(context, "query_tracking", None)
+        _depth = (_tracking.depth + 1) if _tracking is not None else 0
+
         # Stream the subagent's live progress to the UI when the host wired a
         # hook (agent-server only). run_agent calls on_message per message, so
         # this covers both the sync and background paths. Purely additive — no
@@ -429,8 +442,23 @@ def make_agent_tool(
                     if acts:
                         last = acts[-1]
                         activity = last.activity_description or last.tool_name
+                    # Feed the supervisor the same counter the HUD shows, so
+                    # `delegation.status` reports real progress instead of a
+                    # tool_count frozen at 0 for the agent's whole lifetime.
+                    #
+                    # Reaches only TOP-LEVEL agents today: agent_progress_emit is
+                    # set on the root tool_context alone (agent_server.py:6106)
+                    # and create_subagent_context does not carry it down, so a
+                    # nested agent never runs this hook and its tool_count stays
+                    # 0. Same reason `depth` below is always 0 in practice — it
+                    # is the right value to send, and becomes meaningful the day
+                    # the emit hook is propagated to child contexts.
+                    context.agent_supervisor.set_tool_count(
+                        agent_id, _tracker.tool_use_count,
+                    )
                     _emit_progress({
                         "agent_id": agent_id,
+                        "depth": _depth,
                         "name": agent_name,
                         "description": description,
                         "subagent_type": subagent_type,
@@ -445,18 +473,76 @@ def make_agent_tool(
 
             run_params.on_message = _on_subagent_message
 
-        if is_async:
-            return _launch_async_agent(
-                run_params=run_params,
-                context=context,
-                agent_id=agent_id,
-                description=description,
-                prompt=prompt,
-                agent_type=agent_def.agent_type,
-                agent_name=agent_name,
-                resolved_model=resolved_model,
+        # ── Admission control ────────────────────────────────────────────
+        # One session-scoped supervisor gates BOTH spawn paths. Each agent needs
+        # its OWN abort handle for `subagent.interrupt` to reach it — a
+        # foreground delegation never enters runtime_tasks, so the supervisor is
+        # the only place that handle can live.
+        #
+        # But it must be a handle, not a replacement. run_agent resolves
+        # `explicit override → fresh controller for async → THE PARENT'S OWN
+        # controller for sync` (run_agent.py:292-300), so unconditionally
+        # setting an override takes the first branch and silently severs the
+        # link a sync spawn used to get for free — parent ESC / turn cancel
+        # would stop reaching foreground subagents. A *child* controller keeps
+        # that propagation while staying individually abortable: parent abort
+        # reaches the child, and interrupting one subagent does not end the
+        # parent's turn (create_child_abort_controller is one-way by design).
+        from src.utils.abort_controller import (
+            AbortController as _AbortController,
+            create_child_abort_controller as _child_abort_controller,
+        )
+
+        if run_params.abort_controller is None:
+            run_params.abort_controller = (
+                # Async agents deliberately survive parent cancellation, which
+                # is the `elif params.is_async` branch's whole point — keep them
+                # unlinked.
+                _AbortController() if is_async
+                else _child_abort_controller(context.abort_controller)
             )
-        else:
+
+        try:
+            context.agent_supervisor.admit(
+                subagent_id=agent_id,
+                # The spawning agent's own id — None on the root session, which
+                # is what makes a top-level delegation a tree root. NOT
+                # query_tracking.chain_id: that is a fresh uuid per child
+                # context, so it matches no subagent_id and would orphan every
+                # row the clients try to nest.
+                parent_id=getattr(context, "agent_id", None),
+                depth=_depth,
+                goal=description or (prompt or "")[:80],
+                model=resolved_model,
+                abort_controller=run_params.abort_controller,
+            )
+        except AgentAdmissionError as exc:
+            # Refusal is a normal outcome the model must react to, not a crash:
+            # return it as a tool error so the turn continues and the model can
+            # do the work itself or wait for a slot.
+            return ToolResult(
+                name=AGENT_TOOL_NAME,
+                output={"status": "refused", "reason": exc.reason, "error": str(exc)},
+                is_error=True,
+            )
+
+        # A launch that fails AFTER admission (a name collision raising
+        # ToolInputError, say) would otherwise strand the slot for the life of
+        # the session — the background wrapper's release only runs once its
+        # lifecycle has started. The sync path releases in its own finally, so
+        # this guard covers the window before either takes over.
+        try:
+            if is_async:
+                return _launch_async_agent(
+                    run_params=run_params,
+                    context=context,
+                    agent_id=agent_id,
+                    description=description,
+                    prompt=prompt,
+                    agent_type=agent_def.agent_type,
+                    agent_name=agent_name,
+                    resolved_model=resolved_model,
+                )
             return _run_sync_agent(
                 run_params=run_params,
                 agent_id=agent_id,
@@ -467,6 +553,9 @@ def make_agent_tool(
                 agent_name=agent_name,
                 resolved_model=resolved_model,
             )
+        except BaseException:
+            context.agent_supervisor.release(agent_id)
+            raise
 
     def _run_sync_agent(
         *,
@@ -484,6 +573,7 @@ def make_agent_tool(
         from src.types.messages import Message
 
         agent_messages: list[Message] = []
+        interrupted = False
         # R5 (ch13) — the HUD goal label: use the SAME name/description the
         # running emits use, not the truncated prompt (critic residual).
         _hud_name = agent_name if agent_name is not None else \
@@ -527,6 +617,17 @@ def make_agent_tool(
                 status="failed", model=resolved_model,
             )
             raise
+        finally:
+            # The worker has genuinely exited by here (the messages are
+            # collected and finalize_agent_tool has returned), so this is the
+            # earliest honest point to free the slot. Releasing on a status
+            # label instead would let a replacement spawn start while this run
+            # was still on the wire.
+            _supervisor = run_params.parent_context.agent_supervisor
+            # Read BEFORE releasing — the entry is gone afterwards, and the
+            # result below has to say how the run actually ended.
+            interrupted = _supervisor.is_interrupted(agent_id)
+            _supervisor.release(agent_id)
 
         # ch13 round-4 (critic M1) — emit a TERMINAL agent_progress so the
         # TUI's subagent HUD marks this subagent complete instead of
@@ -534,13 +635,38 @@ def make_agent_tool(
         _emit_terminal_agent_progress(
             run_params.parent_context, agent_id=agent_id, name=_hud_name,
             description=_hud_desc, subagent_type=agent_type,
-            status="completed", model=resolved_model,
+            status="interrupted" if interrupted else "completed",
+            model=resolved_model,
         )
 
+        # An aborted query() RETURNS rather than raising, so finalize_agent_tool
+        # succeeds on the partial transcript and this path is reached for an
+        # interrupted agent too. Reporting "completed" here would tell the model
+        # a delegation the user killed had succeeded — with whatever partial
+        # text it had produced — and it would act on that. Say what happened,
+        # in the content the model actually reads.
+        content = result.content
+        if interrupted:
+            content = [
+                {
+                    "type": "text",
+                    "text": (
+                        "[This agent was interrupted before it finished. Any "
+                        "output below is partial and its task is NOT complete.]"
+                    ),
+                },
+                *content,
+            ]
+
+        # Deliberately NOT is_error: the background path reports the same event
+        # as a task-notification rather than an error envelope, the partial
+        # output is often worth keeping (is_error invites the model to discard
+        # it), and is_error already means something else on this tool — a spawn
+        # the supervisor refused. The warning block above carries the meaning.
         return TR(
             name=AGENT_TOOL_NAME,
             output={
-                "status": "completed",
+                "status": "interrupted" if interrupted else "completed",
                 "prompt": prompt,
                 "agent_id": result.agent_id,
                 "agent_type": result.agent_type,
@@ -548,7 +674,7 @@ def make_agent_tool(
                 # model with nothing in the tool call naming one (agent-def
                 # tier / provider default-subagent-model), so surface it.
                 "model": resolved_model,
-                "content": result.content,
+                "content": content,
                 "total_duration_ms": result.total_duration_ms,
                 "total_tokens": result.total_tokens,
                 "total_tool_use_count": result.total_tool_use_count,
@@ -630,9 +756,14 @@ def make_agent_tool(
         # its own internal controller (run_agent.py:291), but now reachable.
         # Setting run_params.abort_controller makes run_agent use THIS one
         # (run_agent.py:286-287) instead of an unreachable internal one.
+        # Defensive only: ``_agent_call`` always sets this before admission so
+        # the supervisor holds the same handle, and it is this helper's sole
+        # call site.
         from src.utils.abort_controller import AbortController as _AbortController
-        _async_abort = _AbortController()
-        run_params.abort_controller = _async_abort
+
+        if run_params.abort_controller is None:
+            run_params.abort_controller = _AbortController()
+        _async_abort = run_params.abort_controller
 
         register_async_agent(
             agent_id=agent_id,
@@ -798,6 +929,10 @@ def make_agent_tool(
                 # not just this backgrounded wrapper.
                 if transcript is not None:
                     transcript.close()
+                # Same contract as the sync path: the slot is held until the
+                # background worker actually stops, including when it stops by
+                # being interrupted.
+                context.agent_supervisor.release(agent_id)
 
         try:
             running_loop = asyncio.get_running_loop()
@@ -805,7 +940,13 @@ def make_agent_tool(
             running_loop = None
 
         if running_loop is not None:
-            running_loop.create_task(_background_lifecycle())
+            # Keep a strong reference: asyncio holds only a weak one, so a
+            # garbage-collected task never runs — and never reaches the
+            # ``finally`` that releases this agent's supervisor slot. The
+            # done-callback discards it once the lifecycle has finished.
+            task = running_loop.create_task(_background_lifecycle())
+            _BACKGROUND_LIFECYCLES.add(task)
+            task.add_done_callback(_BACKGROUND_LIFECYCLES.discard)
         else:
             def _runner(_stop_event: Any) -> None:
                 asyncio.run(_background_lifecycle())
@@ -862,7 +1003,15 @@ def make_agent_tool(
         if not isinstance(result, dict):
             return {"type": "tool_result", "tool_use_id": tool_use_id, "content": str(result)}
         content = result.get("content", "")
-        if result.get("status") == "error":
+        # "refused" is error-shaped: its message lives in ``error`` and it
+        # carries no ``content`` key at all. Without this branch it fell to the
+        # untyped tail with an EMPTY content, which the pipeline's
+        # empty-content guard then rendered as "(Agent completed with no
+        # output)" — telling the model a spawn the supervisor BLOCKED had run
+        # and found nothing, and dropping the one sentence explaining what to
+        # do instead. Pausing delegation makes every following spawn take this
+        # path, so it is the common case, not the rare one.
+        if result.get("status") in ("error", "refused"):
             return {
                 "type": "tool_result",
                 "tool_use_id": tool_use_id,
@@ -880,7 +1029,13 @@ def make_agent_tool(
                     "Use TaskOutput with task_id equal to task_output_key to check completion."
                 ),
             }
-        if result.get("status") == "completed":
+        # "interrupted" renders exactly like "completed": this mapper is what
+        # turns the block list into the string every Agent result reaches the
+        # model as, so a status it does not know falls to the untyped tail and
+        # ships a raw list instead — in a different shape from every other
+        # delegation, on precisely the path that exists to be honest about a
+        # kill. Any future status added here needs the same treatment.
+        if result.get("status") in ("completed", "interrupted"):
             text_parts: list[str] = []
             if isinstance(content, list):
                 for block in content:

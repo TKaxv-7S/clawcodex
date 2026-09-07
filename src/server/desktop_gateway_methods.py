@@ -911,6 +911,9 @@ class GatewayConnection:
             "slash.exec": self.slash_exec,
             "command.dispatch": self.command_dispatch,
             "setup.status": self.setup_status,
+            "delegation.status": self.delegation_status,
+            "delegation.pause": self.delegation_pause,
+            "subagent.interrupt": self.subagent_interrupt,
         }
 
     async def on_open(self) -> None:
@@ -1468,6 +1471,47 @@ class GatewayConnection:
             "path": str(result.get("plan_file_path") or ""),
             "plan": plan if isinstance(plan, str) else "",
         }
+
+    # ── delegation control plane ─────────────────────────────────────────────
+    #
+    # Thin forwarders onto the agent-server's supervisor, so the browser reads
+    # the same authoritative live-agent state the TUI overlay does instead of
+    # reconstructing a tree from streamed progress events.
+
+    async def delegation_status(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Live subagents plus the session's capacity caps."""
+        result = await self._session(params).control_query("delegation_status", {})
+        if not isinstance(result, dict):
+            # A dead or unanswering session must still yield a renderable shape;
+            # the panel maps over `active` unconditionally.
+            return {"active": []}
+        return result
+
+    async def delegation_pause(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Stop or resume admission of new subagents.
+
+        ``paused`` is forwarded only when the caller stated one — omitting it
+        asks the backend to flip the current value.
+        """
+        forwarded: dict[str, Any] = {}
+        if params.get("paused") is not None:
+            forwarded["paused"] = bool(params.get("paused"))
+        result = await self._session(params).control_query("delegation_pause", forwarded)
+        if not isinstance(result, dict):
+            return {"paused": False}
+        return result
+
+    async def subagent_interrupt(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Abort one live subagent; ``found`` is false when it was not live."""
+        agent_id = str(params.get("subagent_id") or "")
+        if not agent_id:
+            return {"found": False, "subagent_id": ""}
+        result = await self._session(params).control_query(
+            "subagent_interrupt", {"subagent_id": agent_id},
+        )
+        if not isinstance(result, dict):
+            return {"found": False, "subagent_id": agent_id}
+        return result
 
     async def image_attach(self, params: dict[str, Any]) -> dict[str, Any]:
         """Attach a pasted or dropped image to the next prompt.

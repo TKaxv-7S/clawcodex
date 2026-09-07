@@ -14,17 +14,20 @@ import type {
   CommandEntry,
   CommandsCatalogResult,
   ContextUsageResult,
+  DelegationPauseResult,
+  DelegationStatusResult,
   DirectoryListing,
-  GatewayEvent,
   EffortOptionsResult,
   FileSearchResult,
+  GatewayEvent,
   GeneralSettingsResult,
   ModelOptionsResult,
+  ProjectsTreeResult,
   ProviderListResult,
   ProviderMutationResult,
-  ProjectsTreeResult,
   SessionResumeResult,
   SlashResult,
+  SubagentInterruptResult,
 } from '../gateway/protocol.ts'
 import {
   $backendNano,
@@ -33,6 +36,7 @@ import {
   $commands,
   $connection,
   $contextUsage,
+  $delegation,
   $effort,
   $generalSettings,
   $detailsNodeId,
@@ -591,6 +595,82 @@ export async function respondQuestion(
   } catch (error) {
     notice(errorText(error), 'error')
   }
+}
+
+// ── delegation control plane ────────────────────────────────────────────────
+
+/**
+ * Refresh the live-agent snapshot.
+ *
+ * Failures leave the last good snapshot in place rather than blanking the
+ * panel: a dropped poll during a reconnect is not evidence that the agents
+ * stopped, and flashing an empty list would say it was.
+ */
+export async function fetchDelegationStatus(): Promise<void> {
+  const sessionId = $sessionId.get()
+
+  if (sessionId === null) return
+
+  try {
+    const result = await gateway().request<DelegationStatusResult>('delegation.status', {
+      session_id: sessionId,
+    })
+
+    $delegation.set(result ?? { active: [] })
+  } catch {
+    // Keep the previous snapshot; the panel shows its own staleness.
+  }
+}
+
+/**
+ * Stop or resume admission of new subagents.
+ *
+ * Sends the value it wants rather than asking the backend to flip, so two
+ * clicks racing from two tabs converge on one state instead of toggling past
+ * each other.
+ */
+export async function setDelegationPaused(paused: boolean): Promise<void> {
+  const sessionId = $sessionId.get()
+
+  if (sessionId === null) return
+
+  try {
+    const result = await gateway().request<DelegationPauseResult>('delegation.pause', {
+      paused,
+      session_id: sessionId,
+    })
+
+    $delegation.set({ ...($delegation.get() ?? {}), paused: result?.paused ?? paused })
+  } catch {
+    notice('Could not change delegation state', 'error')
+  }
+}
+
+/**
+ * Abort one live subagent.
+ *
+ * Reports a miss rather than an interruption when the agent had already
+ * finished — the panel can be a poll behind the truth.
+ */
+export async function interruptSubagent(subagentId: string): Promise<void> {
+  const sessionId = $sessionId.get()
+
+  if (sessionId === null) return
+
+  try {
+    const result = await gateway().request<SubagentInterruptResult>('subagent.interrupt', {
+      session_id: sessionId,
+      subagent_id: subagentId,
+    })
+
+    if (result?.found !== true) {
+      notice('That agent had already finished', 'info')
+    }
+  } catch {
+    notice('Could not interrupt the agent', 'error')
+  }
+
+  await fetchDelegationStatus()
 }
 
 /** The session's plan text, for the plan-review takeover. */
