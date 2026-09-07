@@ -225,6 +225,9 @@ def test_finishing_one_agent_lets_the_next_in(agent_tool, ctx, fake_run):
 def test_an_interrupted_foreground_agent_is_not_reported_as_completed(
     agent_tool, ctx, fake_run,
 ):
+    emitted: list[dict[str, Any]] = []
+    ctx.agent_progress_emit = emitted.append
+
     def during(params):
         agent_id = ctx.agent_supervisor.snapshot()["active"][0]["subagent_id"]
         ctx.agent_supervisor.interrupt(agent_id)
@@ -240,6 +243,33 @@ def test_an_interrupted_foreground_agent_is_not_reported_as_completed(
     )
     assert "interrupted" in text.lower()
     assert "NOT complete" in text
+
+    # The HUD has to agree, or the overlay shows a killed agent as finished.
+    assert [e["status"] for e in emitted][-1] == "interrupted"
+
+
+def test_an_interrupted_result_reaches_the_model_in_the_same_shape_as_a_normal_one(
+    agent_tool, ctx, fake_run,
+):
+    # map_result_to_api is what renders the block list into the string every
+    # Agent result arrives as. A status it does not know falls through to the
+    # untyped tail and ships a raw list instead — a different wire shape on
+    # exactly the path that exists to be honest about a kill.
+    def during(params):
+        agent_id = ctx.agent_supervisor.snapshot()["active"][0]["subagent_id"]
+        ctx.agent_supervisor.interrupt(agent_id)
+
+    fake_run(during)
+    interrupted = agent_tool.map_result_to_api(_call(agent_tool, ctx).output, "tu_1")
+
+    fake_run()
+    completed = agent_tool.map_result_to_api(_call(agent_tool, ctx).output, "tu_2")
+
+    assert isinstance(completed["content"], str)
+    assert isinstance(interrupted["content"], str), (
+        "an interrupted result must render like every other one, not as a raw block list"
+    )
+    assert "NOT complete" in interrupted["content"]
 
 
 def test_an_uninterrupted_foreground_agent_still_reports_completed(

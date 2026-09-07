@@ -658,6 +658,11 @@ def make_agent_tool(
                 *content,
             ]
 
+        # Deliberately NOT is_error: the background path reports the same event
+        # as a task-notification rather than an error envelope, the partial
+        # output is often worth keeping (is_error invites the model to discard
+        # it), and is_error already means something else on this tool — a spawn
+        # the supervisor refused. The warning block above carries the meaning.
         return TR(
             name=AGENT_TOOL_NAME,
             output={
@@ -1016,7 +1021,13 @@ def make_agent_tool(
                     "Use TaskOutput with task_id equal to task_output_key to check completion."
                 ),
             }
-        if result.get("status") == "completed":
+        # "interrupted" renders exactly like "completed": this mapper is what
+        # turns the block list into the string every Agent result reaches the
+        # model as, so a status it does not know falls to the untyped tail and
+        # ships a raw list instead — in a different shape from every other
+        # delegation, on precisely the path that exists to be honest about a
+        # kill. Any future status added here needs the same treatment.
+        if result.get("status") in ("completed", "interrupted"):
             text_parts: list[str] = []
             if isinstance(content, list):
                 for block in content:

@@ -3919,8 +3919,10 @@ class _AgentSession:
         success — the overlay can be looking at a completed row whose agent has
         already gone, and telling it "interrupted" would be a lie.
         """
-        from src.tasks.local_agent import is_local_agent_task, kill_async_agent
-        from src.tasks_core import is_terminal_task_status
+        from src.tasks.local_agent import (
+            is_local_agent_task_terminal,
+            kill_async_agent,
+        )
 
         agent_id = str(subagent_id or "")
         if not agent_id:
@@ -3940,7 +3942,7 @@ class _AgentSession:
         registry = getattr(self.tool_context, "runtime_tasks", None)
         if registry is not None:
             state = registry.get(agent_id)
-            if is_local_agent_task(state) and not is_terminal_task_status(state.status):
+            if state is not None and not is_local_agent_task_terminal(state):
                 kill_async_agent(agent_id, registry)
                 found = True
 
