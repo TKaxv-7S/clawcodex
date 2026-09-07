@@ -3920,6 +3920,7 @@ class _AgentSession:
         already gone, and telling it "interrupted" would be a lie.
         """
         from src.tasks.local_agent import (
+            is_local_agent_task,
             is_local_agent_task_terminal,
             kill_async_agent,
         )
@@ -3942,7 +3943,12 @@ class _AgentSession:
         registry = getattr(self.tool_context, "runtime_tasks", None)
         if registry is not None:
             state = registry.get(agent_id)
-            if state is not None and not is_local_agent_task_terminal(state):
+            # BOTH halves matter. is_local_agent_task_terminal returns False
+            # for a state that is not an agent at all, so without the type
+            # guard a background-bash or workflow id would report found=True
+            # while kill_async_agent's own isinstance guard quietly did
+            # nothing — the exact lie this handler's docstring exists to avoid.
+            if is_local_agent_task(state) and not is_local_agent_task_terminal(state):
                 kill_async_agent(agent_id, registry)
                 found = True
 

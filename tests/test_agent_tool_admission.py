@@ -69,6 +69,31 @@ def test_spawn_is_refused_while_delegation_is_paused(agent_tool, ctx):
     assert result.output["reason"] == "paused"
 
 
+def test_a_refusal_reaches_the_model_as_an_error_carrying_its_reason(agent_tool, ctx):
+    # The refusal message is the entire reason a refusal is a ToolResult rather
+    # than a raise. Before the mapper knew this status, it fell to the untyped
+    # tail with EMPTY content — which the pipeline renders as "(Agent completed
+    # with no output)", i.e. the model is told the blocked spawn ran and found
+    # nothing, and the "do the work yourself" instruction is dropped.
+    ctx.agent_supervisor.set_paused(True)
+    wire = agent_tool.map_result_to_api(_call(agent_tool, ctx).output, "tu_1")
+
+    assert wire["is_error"] is True
+    assert isinstance(wire["content"], str)
+    assert "paused" in wire["content"].lower()
+    assert "completed" not in wire["content"].lower()
+
+
+def test_a_capacity_refusal_also_reaches_the_model_with_its_reason(agent_tool, ctx):
+    ctx.agent_supervisor = AgentSupervisor(max_concurrent=1)
+    ctx.agent_supervisor.admit(subagent_id="already-running")
+
+    wire = agent_tool.map_result_to_api(_call(agent_tool, ctx).output, "tu_1")
+
+    assert wire["is_error"] is True
+    assert "limit of 1" in wire["content"]
+
+
 def test_a_refused_spawn_leaves_no_trace_in_the_registry(agent_tool, ctx):
     ctx.agent_supervisor = AgentSupervisor(max_concurrent=1)
     ctx.agent_supervisor.admit(subagent_id="already-running")

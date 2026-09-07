@@ -1003,7 +1003,15 @@ def make_agent_tool(
         if not isinstance(result, dict):
             return {"type": "tool_result", "tool_use_id": tool_use_id, "content": str(result)}
         content = result.get("content", "")
-        if result.get("status") == "error":
+        # "refused" is error-shaped: its message lives in ``error`` and it
+        # carries no ``content`` key at all. Without this branch it fell to the
+        # untyped tail with an EMPTY content, which the pipeline's
+        # empty-content guard then rendered as "(Agent completed with no
+        # output)" — telling the model a spawn the supervisor BLOCKED had run
+        # and found nothing, and dropping the one sentence explaining what to
+        # do instead. Pausing delegation makes every following spawn take this
+        # path, so it is the common case, not the rare one.
+        if result.get("status") in ("error", "refused"):
             return {
                 "type": "tool_result",
                 "tool_use_id": tool_use_id,

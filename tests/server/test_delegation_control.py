@@ -230,6 +230,50 @@ class TestSubagentInterrupt(unittest.TestCase):
         self.assertTrue(_last_reply(emitted)["found"])
         self.assertEqual(abort.reasons, ["interrupted by user"])
 
+    def test_a_non_agent_task_id_is_not_reported_as_interrupted(self) -> None:
+        # runtime_tasks holds shell, workflow and teammate states too.
+        # kill_async_agent's own isinstance guard makes killing one a no-op, so
+        # reporting found=True would claim a kill that did not happen.
+        from src.task_registry import RuntimeTaskRegistry
+        from src.tasks.local_shell import LocalShellTaskState
+
+        registry = RuntimeTaskRegistry()
+        registry.upsert(LocalShellTaskState(
+            id="sh1", type="local_bash", status="running", description="a shell",
+            start_time=0.0, output_file="/tmp/sh1.log",
+        ))
+        sup = AgentSupervisor()
+        sess, emitted = _make_session(sup)
+        sess.tool_context = SimpleNamespace(
+            workspace_trusted=True, agent_supervisor=sup, runtime_tasks=registry,
+        )
+
+        _control(sess, "subagent_interrupt", subagent_id="sh1")
+
+        self.assertFalse(_last_reply(emitted)["found"])
+        self.assertEqual(registry.get("sh1").status, "running")
+
+    def test_an_already_finished_agent_is_not_reported_as_interrupted(self) -> None:
+        from src.task_registry import RuntimeTaskRegistry
+        from src.tasks.local_agent import complete_agent_task, register_async_agent
+
+        registry = RuntimeTaskRegistry()
+        register_async_agent(
+            agent_id="bg1", description="d", prompt="p", agent_type="general-purpose",
+            model=None, abort_controller=_FakeAbort(), registry=registry,
+        )
+        complete_agent_task("bg1", result_text="done", registry=registry)
+
+        sup = AgentSupervisor()
+        sess, emitted = _make_session(sup)
+        sess.tool_context = SimpleNamespace(
+            workspace_trusted=True, agent_supervisor=sup, runtime_tasks=registry,
+        )
+
+        _control(sess, "subagent_interrupt", subagent_id="bg1")
+
+        self.assertFalse(_last_reply(emitted)["found"])
+
     def test_interrupted_agent_still_holds_its_slot_in_the_next_status(self) -> None:
         # Release happens when the worker actually exits, so the row must still
         # be there — marked interrupted, not vanished.
