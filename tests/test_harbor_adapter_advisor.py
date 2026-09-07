@@ -51,6 +51,11 @@ def _agent(
     agent._parsed_model_provider = model_provider
     agent._forward_keys = False
     agent._fusion = None
+    # Set for the same reason as the rest: this helper builds the agent
+    # with __new__, so every attribute _seed_container_settings reads has
+    # to be supplied here. Missing one is an AttributeError, not a
+    # default.
+    agent._websearch = False
     agent._resolved_flags = {"effort": effort} if effort else {}
     agent._extra_env = {}
     agent._get_env = lambda key: f"{key}-VALUE"

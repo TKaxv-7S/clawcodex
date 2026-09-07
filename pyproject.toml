@@ -29,7 +29,14 @@ classifiers = [
 ]
 
 dependencies = [
-    "anthropic>=0.116.0",
+    # Capped below 1.0 for the same reason as the openai cap below:
+    # anthropic 1.0.0 moved the SDK onto httpx2 (``httpx2<3,>=2.0.0``),
+    # so an ``http_client=httpx.Client(...)`` handed to it is rejected
+    # outright — "this SDK uses httpx2". That is what breaks
+    # tests/test_minimax_provider.py under a fresh resolve while a pinned
+    # local env stays green. Lift together with the openai cap once the
+    # transport hooks are migrated to httpx2.
+    "anthropic>=0.116.0,<1",
     # Capped below 3.0 deliberately. openai 3.0.0 (2026-08-12) is the HTTPX2
     # migration: the SDK's default transport became httpx2 (httpx is no
     # longer even a dependency), and requests silently stop flowing through

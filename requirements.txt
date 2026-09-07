@@ -1,6 +1,11 @@
 # Runtime dependencies (production install).
 # Dev/test-only tools live in requirements.dev.txt.
-anthropic>=0.116.0
+# Capped below 1.0: anthropic 1.0.0 moved the SDK onto httpx2, exactly as
+# openai 3.0.0 did below — a passed ``http_client=httpx.Client(...)`` is
+# rejected outright ("this SDK uses httpx2"), which is what breaks
+# tests/test_minimax_provider.py in CI while a pinned local env stays
+# green. Lift together with the openai cap once both are on httpx2.
+anthropic>=0.116.0,<1
 # Capped below 3.0: openai 3.0.0 (2026-08-12) moved the SDK onto httpx2, so
 # requests silently bypass the httpx layer we hook — the ``http_client=
 # httpx.Client(verify=False)`` escape hatch stops carrying the transport and

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `anthropic` is capped below 1.0. Version 1.0.0 moved the SDK onto `httpx2`,
+  which rejects the `http_client=httpx.Client(...)` hook the provider layer
+  depends on — the same migration `openai` is already capped for. An unpinned
+  resolve installed 1.x in CI while pinned local environments stayed green.
+
 ## [1.6.0] - 2026-08-15
 
 ### Added
