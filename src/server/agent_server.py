@@ -3919,15 +3919,39 @@ class _AgentSession:
         success — the overlay can be looking at a completed row whose agent has
         already gone, and telling it "interrupted" would be a lie.
         """
-        supervisor = self._agent_supervisor()
+        from src.tasks.local_agent import is_local_agent_task, kill_async_agent
+        from src.tasks_core import is_terminal_task_status
+
         agent_id = str(subagent_id or "")
-        if supervisor is None or not agent_id:
-            self._reply(request_id, {"found": False, "subagent_id": agent_id})
+        if not agent_id:
+            self._reply(request_id, {"found": False, "subagent_id": ""})
             return
-        self._reply(request_id, {
-            "found": supervisor.interrupt(agent_id),
-            "subagent_id": agent_id,
-        })
+
+        found = False
+
+        # A BACKGROUND agent must go through kill_async_agent, not a bare
+        # abort. query() RETURNS rather than raising when its controller is
+        # aborted, so _background_lifecycle would take its success branch and
+        # report the killed delegation to the model as "completed" with an
+        # empty result. kill_async_agent is what flips the registry to
+        # "killed" first — which is precisely the precondition
+        # _background_lifecycle's own comment says it relies on — and it also
+        # schedules eviction and enqueues the single task-notification.
+        registry = getattr(self.tool_context, "runtime_tasks", None)
+        if registry is not None:
+            state = registry.get(agent_id)
+            if is_local_agent_task(state) and not is_terminal_task_status(state.status):
+                kill_async_agent(agent_id, registry)
+                found = True
+
+        # Foreground agents live only in the supervisor. This also flips the
+        # snapshot's status to "interrupted" so a poll taken during wind-down
+        # says "stopping", not "running".
+        supervisor = self._agent_supervisor()
+        if supervisor is not None and supervisor.interrupt(agent_id):
+            found = True
+
+        self._reply(request_id, {"found": found, "subagent_id": agent_id})
 
     async def _do_worktree_status(self, request_id: object) -> None:
         """Exit-time snapshot for the client's keep/remove decision.

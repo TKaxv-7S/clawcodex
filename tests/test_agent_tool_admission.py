@@ -214,6 +214,109 @@ def test_finishing_one_agent_lets_the_next_in(agent_tool, ctx, fake_run):
     assert _call(agent_tool, ctx).output["status"] == "completed"
 
 
+# ── interruption is reported honestly ────────────────────────────────────
+#
+# An aborted query() RETURNS rather than raising, so both lifecycles reach
+# their SUCCESS branch after an interrupt. Without these, a delegation the user
+# killed is reported to the model as "completed" with partial output, and the
+# model acts on it.
+
+
+def test_an_interrupted_foreground_agent_is_not_reported_as_completed(
+    agent_tool, ctx, fake_run,
+):
+    def during(params):
+        agent_id = ctx.agent_supervisor.snapshot()["active"][0]["subagent_id"]
+        ctx.agent_supervisor.interrupt(agent_id)
+
+    fake_run(during)
+    result = _call(agent_tool, ctx)
+
+    assert result.output["status"] == "interrupted"
+    # The model reads the content, not the status field, so the warning has to
+    # be in there too.
+    text = " ".join(
+        b.get("text", "") for b in result.output["content"] if isinstance(b, dict)
+    )
+    assert "interrupted" in text.lower()
+    assert "NOT complete" in text
+
+
+def test_an_uninterrupted_foreground_agent_still_reports_completed(
+    agent_tool, ctx, fake_run,
+):
+    fake_run()
+    result = _call(agent_tool, ctx)
+
+    assert result.output["status"] == "completed"
+    text = " ".join(
+        b.get("text", "") for b in result.output["content"] if isinstance(b, dict)
+    )
+    assert "interrupted" not in text.lower()
+
+
+# ── abort propagation ────────────────────────────────────────────────────
+#
+# The supervisor needs a per-agent abort handle, but a sync spawn previously
+# ran on the PARENT'S controller (run_agent.py: "share with parent for sync so
+# parent ESC propagates"). Handing run_agent an unconditional override takes an
+# earlier branch and severs that link, so these pin both halves at once.
+
+
+def test_parent_abort_still_reaches_a_foreground_subagent(agent_tool, ctx, fake_run):
+    seen: dict[str, Any] = {}
+
+    def during(params):
+        # ESC / turn cancel aborts the parent's controller mid-run.
+        ctx.abort_controller.abort("user pressed ESC")
+        seen["child_aborted"] = params.abort_controller.signal.aborted
+
+    fake_run(during)
+    _call(agent_tool, ctx)
+
+    assert seen["child_aborted"] is True, (
+        "a foreground subagent must still stop when the parent turn is aborted"
+    )
+
+
+def test_interrupting_a_foreground_subagent_does_not_abort_the_parent_turn(
+    agent_tool, ctx, fake_run,
+):
+    # The other direction must NOT propagate: killing one delegation from the
+    # agents overlay cannot take the user's whole turn down with it.
+    def during(params):
+        agent_id = ctx.agent_supervisor.snapshot()["active"][0]["subagent_id"]
+        ctx.agent_supervisor.interrupt(agent_id)
+
+    fake_run(during)
+    _call(agent_tool, ctx)
+
+    assert ctx.abort_controller.signal.aborted is False
+
+
+@pytest.mark.asyncio
+async def test_a_background_subagent_survives_parent_abort(agent_tool, ctx, monkeypatch):
+    # Background agents deliberately outlive the turn that spawned them, so
+    # their controller must stay unlinked from the parent's — the `elif
+    # params.is_async` branch in run_agent exists for exactly this.
+    import src.tool_system.tools.agent as agentmod
+    from src.types.messages import AssistantMessage
+
+    captured: dict[str, Any] = {}
+
+    async def fake_run_agent(params):
+        captured["abort"] = params.abort_controller
+        yield AssistantMessage(content=[{"type": "text", "text": "done"}])
+
+    monkeypatch.setattr(agentmod, "run_agent", fake_run_agent)
+
+    _call(agent_tool, ctx, run_in_background=True)
+    assert await _drain(lambda: "abort" in captured)
+
+    ctx.abort_controller.abort("user pressed ESC")
+    assert captured["abort"].signal.aborted is False
+
+
 # ── the background path ──────────────────────────────────────────────────
 
 

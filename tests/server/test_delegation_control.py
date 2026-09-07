@@ -178,6 +178,58 @@ class TestSubagentInterrupt(unittest.TestCase):
         self.assertFalse(_last_reply(emitted)["found"])
         self.assertEqual(abort.reasons, [], "no id must never fan out to live agents")
 
+    def test_a_background_agent_is_killed_through_the_registry_not_just_aborted(self) -> None:
+        """The bug this guards: a bare controller.abort() is not enough.
+
+        query() RETURNS rather than raising when aborted, so
+        _background_lifecycle takes its SUCCESS branch and calls
+        complete_agent_task — which only no-ops if the registry was ALREADY
+        marked terminal. Without going through kill_async_agent the model is
+        told a delegation the user killed "completed" with an empty result.
+        """
+        from src.task_registry import RuntimeTaskRegistry
+        from src.tasks.local_agent import register_async_agent
+
+        sup = AgentSupervisor()
+        abort = _FakeAbort()
+        registry = RuntimeTaskRegistry()
+        register_async_agent(
+            agent_id="bg1", description="d", prompt="p", agent_type="general-purpose",
+            model=None, abort_controller=abort, registry=registry,
+        )
+        sup.admit(subagent_id="bg1", abort_controller=abort)
+
+        sess, emitted = _make_session(sup)
+        sess.tool_context = SimpleNamespace(
+            workspace_trusted=True, agent_supervisor=sup, runtime_tasks=registry,
+        )
+
+        _control(sess, "subagent_interrupt", subagent_id="bg1")
+
+        self.assertTrue(_last_reply(emitted)["found"])
+        # The registry — not just the controller — has to carry the verdict, so
+        # complete_agent_task no-ops when the lifecycle reaches its finally.
+        self.assertEqual(registry.get("bg1").status, "killed")
+
+    def test_a_foreground_only_agent_is_still_interrupted_without_a_registry_entry(self) -> None:
+        # Sync agents never enter runtime_tasks; the supervisor is their only home.
+        from src.task_registry import RuntimeTaskRegistry
+
+        sup = AgentSupervisor()
+        abort = _FakeAbort()
+        sup.admit(subagent_id="fg1", abort_controller=abort)
+
+        sess, emitted = _make_session(sup)
+        sess.tool_context = SimpleNamespace(
+            workspace_trusted=True, agent_supervisor=sup,
+            runtime_tasks=RuntimeTaskRegistry(),
+        )
+
+        _control(sess, "subagent_interrupt", subagent_id="fg1")
+
+        self.assertTrue(_last_reply(emitted)["found"])
+        self.assertEqual(abort.reasons, ["interrupted by user"])
+
     def test_interrupted_agent_still_holds_its_slot_in_the_next_status(self) -> None:
         # Release happens when the worker actually exits, so the row must still
         # be there — marked interrupted, not vanished.

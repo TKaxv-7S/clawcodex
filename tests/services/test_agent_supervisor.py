@@ -177,14 +177,19 @@ def test_interrupt_survives_an_abort_controller_that_raises():
     assert sup.interrupt("a") is True
 
 
-def test_interrupt_all_signals_every_live_agent():
+def test_is_interrupted_tracks_the_verdict_and_clears_on_release():
+    # The sync spawn path reads this to decide whether to report "completed" or
+    # "interrupted", and must read it BEFORE releasing.
     sup = AgentSupervisor()
-    aborts = {name: _FakeAbort() for name in ("a", "b", "c")}
-    for name, abort in aborts.items():
-        sup.admit(subagent_id=name, abort_controller=abort)
+    sup.admit(subagent_id="a", abort_controller=_FakeAbort())
 
-    assert sup.interrupt_all() == 3
-    assert all(a.reasons for a in aborts.values())
+    assert sup.is_interrupted("a") is False
+    sup.interrupt("a")
+    assert sup.is_interrupted("a") is True
+
+    sup.release("a")
+    assert sup.is_interrupted("a") is False
+    assert sup.is_interrupted("never-existed") is False
 
 
 # ── snapshot ─────────────────────────────────────────────────────────────

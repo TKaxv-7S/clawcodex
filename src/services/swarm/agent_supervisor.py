@@ -4,14 +4,19 @@ Clawcodex spawns subagents down two paths that never met: ``_run_sync_agent``
 (foreground, returns inline) and ``_launch_async_agent`` (background, lands in
 ``runtime_tasks``). Only the background path was observable, so nothing in the
 process knew how many agents were live, nothing bounded how many could be
-started, and the TUI's agents overlay had no authoritative snapshot to read —
-it reconstructed a tree from streamed ``agent_progress`` events alone.
+started, and neither client could ask what was running.
 
-This module is the missing shared authority. Both spawn paths call
+This module is the missing shared authority. Both Agent-tool spawn paths call
 :meth:`AgentSupervisor.admit` before running and :meth:`AgentSupervisor.release`
 when the worker actually exits, so one session-owned object answers "what is
 running right now", enforces capacity, and holds the abort handles that make
 interruption work for foreground agents too.
+
+Not yet covered: ``src/workflow/runner.py`` drives ``run_agent`` directly rather
+than through the Agent tool, so workflow agents consume no slot here, do not
+appear in :meth:`snapshot`, and cannot be interrupted through it. They have
+their own cap (``workflow/constants.py``). Routing them through this supervisor
+is deliberate future work, not an oversight to read past.
 
 Modelled on the OpenAI Codex ``AgentRegistry`` (``codex-rs/core/src/agent/
 registry.rs``): ``reserve_spawn_slot`` rejects with ``AgentLimitReached`` past a
@@ -22,6 +27,11 @@ The wire shape of :meth:`snapshot` is the ``DelegationStatusResponse`` the TUI
 already declared in ``ui-tui/src/gatewayTypes.ts`` — including
 ``max_concurrent_children`` and ``max_spawn_depth``, which is what the client
 has been asking the backend for since before this existed.
+
+Which client reads what: ``ui-web``'s agents panel renders ``active[]`` from
+this snapshot. ``ui-tui``'s overlay consumes only the caps and ``paused`` — its
+rows still come from the reconstructed ``agent_progress`` tree, so its pause and
+kill controls are now live but its list is not yet served from here.
 """
 
 from __future__ import annotations
@@ -43,22 +53,31 @@ __all__ = [
 
 #: Default ceiling on agents live at once in one session.
 #:
-#: Matched to ``orchestrator._DEFAULT_MAX_TOOL_USE_CONCURRENCY`` (10) on
-#: purpose: a batch of parallel *foreground* Agent calls is already bounded by
-#: the tool-use orchestrator at that number, so this cap can never deny work the
-#: orchestrator would itself have admitted. What it does bound is the
-#: *background* path, which detaches from the tool loop and was previously
-#: unbounded — the actual runaway case. Raise via
-#: ``CLAWCODEX_MAX_CONCURRENT_AGENTS``.
-DEFAULT_MAX_CONCURRENT_CHILDREN = 10
+#: This is a runaway backstop, NOT a scheduling budget — deliberately set well
+#: above any legitimate fan-out so that hitting it means something is wrong.
+#:
+#: It cannot be derived from the tool-use orchestrator's own bound
+#: (``_DEFAULT_MAX_TOOL_USE_CONCURRENCY``, 10), because the two count different
+#: things: a background agent holds its slot until its *worker* exits, which can
+#: be many turns after the tool call returned. Three background agents from an
+#: earlier turn plus a ten-wide foreground batch is 13 live agents from a
+#: session the orchestrator never over-admitted. Coordinator mode makes that
+#: routine — every coordinator spawn is forced async and its prompt actively
+#: teaches fan-out ("Parallelism is your superpower").
+#:
+#: Raise (or lower, to actually schedule) via ``CLAWCODEX_MAX_CONCURRENT_AGENTS``.
+DEFAULT_MAX_CONCURRENT_CHILDREN = 32
 
 #: Default ceiling on spawn nesting. Depth 0 is a child of the root session.
 #:
 #: Defense in depth rather than the primary lever: ``AGENT_TOOL_NAME`` is in
 #: ``ALL_AGENT_DISALLOWED_TOOLS``, so an ordinary subagent cannot spawn a
-#: grandchild at all. This bounds the paths that bypass that filter — the fork
-#: agent, coordinator workers, and ``workflow/runner.py`` — instead of relying
-#: on each of them to bound itself. Raise via ``CLAWCODEX_MAX_AGENT_DEPTH``.
+#: grandchild at all — and coordinator workers cannot either, since Agent is
+#: also absent from ``ASYNC_AGENT_ALLOWED_TOOLS``. The one path that genuinely
+#: bypasses that filter is the fork agent (``use_exact_tools=True`` copies the
+#: parent's tool array verbatim, Agent included). ``workflow/runner.py`` is not
+#: bounded by this at all: it calls ``run_agent`` directly and never reaches
+#: ``admit`` — see the module docstring. Raise via ``CLAWCODEX_MAX_AGENT_DEPTH``.
 DEFAULT_MAX_SPAWN_DEPTH = 3
 
 _ENV_MAX_CONCURRENT = "CLAWCODEX_MAX_CONCURRENT_AGENTS"
@@ -216,7 +235,8 @@ class AgentSupervisor:
                 raise AgentAdmissionError(
                     f"This session already has {len(self._live)} agents running, "
                     f"which is the limit of {self._max_concurrent}. Wait for one "
-                    f"to finish before spawning another.",
+                    f"to finish before spawning another, or tell the user they "
+                    f"can raise {_ENV_MAX_CONCURRENT}.",
                     reason="capacity",
                 )
 
@@ -248,6 +268,17 @@ class AgentSupervisor:
             agent = self._live.get(subagent_id)
             if agent is not None:
                 agent.status = status
+
+    def is_interrupted(self, subagent_id: str) -> bool:
+        """Whether this agent was interrupted. False once it has been released.
+
+        Read it BEFORE :meth:`release` — a finished run has to know how it
+        ended in order to report that honestly, and the entry is gone
+        afterwards.
+        """
+        with self._lock:
+            agent = self._live.get(subagent_id)
+            return agent is not None and agent.status == "interrupted"
 
     def set_tool_count(self, subagent_id: str, count: int) -> None:
         """Set a live agent's tool counter. No-op once it has been released.
@@ -301,12 +332,6 @@ class AgentSupervisor:
             except Exception:  # noqa: BLE001 - an abort must never propagate
                 pass
         return True
-
-    def interrupt_all(self) -> int:
-        """Abort every live agent. Returns how many were signalled."""
-        with self._lock:
-            ids = list(self._live)
-        return sum(1 for agent_id in ids if self.interrupt(agent_id))
 
     # -- observation ------------------------------------------------------
 
