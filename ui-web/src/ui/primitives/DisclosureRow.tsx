@@ -25,6 +25,13 @@ export interface DisclosureRowProps {
  * The whole line is the hit target when it can expand, and the leading glyph
  * doubles as the disclosure affordance — so the row costs no extra chevron
  * column in the flow's left margin.
+ *
+ * That hit target is a button *stretched under* the row's content rather than
+ * wrapped around it. A summary may itself hold something clickable — a file
+ * tool's path opens the file — and interactive content inside a button is
+ * both invalid HTML and, when the outer button is disabled (a row with nothing
+ * to disclose), literally unclickable. The content sits above the overlay and
+ * lets pointer events through; only the interactive parts take them back.
  */
 export function DisclosureRow({
   body,
@@ -41,15 +48,20 @@ export function DisclosureRow({
 
   return (
     <div className={css.root} data-state={state}>
-      <button
-        aria-expanded={expandable ? expanded : undefined}
+      <div
         className={css.row}
         data-expandable={expandable ? '' : undefined}
         data-expanded={expanded ? '' : undefined}
-        disabled={!expandable}
-        onClick={onToggle}
-        type="button"
       >
+        {expandable && (
+          <button
+            aria-expanded={expanded}
+            aria-label={title}
+            className={css.toggle}
+            onClick={onToggle}
+            type="button"
+          />
+        )}
         <span className={css.leading}>
           <span className={css.iconIdle}>{icon}</span>
           {expandable && (
@@ -72,7 +84,7 @@ export function DisclosureRow({
           </>
         )}
         {trailing !== undefined && <span className={css.trailing}>{trailing}</span>}
-      </button>
+      </div>
       {expandable && expanded && <div className={css.body}>{body}</div>}
     </div>
   )

@@ -12,7 +12,7 @@
  */
 
 import { useStore } from '@nanostores/react'
-import { useEffect } from 'react'
+import { useEffect, useMemo } from 'react'
 
 import { $workspace } from '../state/store.ts'
 import { FileTextIcon, FolderIcon, FolderOpenIcon, RefreshIcon } from '../ui/icons.tsx'
@@ -38,6 +38,12 @@ export function workspaceTitle(root: string): string {
 
 function Level({ path, tree }: { path: string; tree: FilesTreeState }) {
   const level = tree.levels[path]
+  // Ordered once per listing rather than on every tree change: expanding one
+  // directory would otherwise re-sort every other open level.
+  const entries = useMemo(
+    () => (level?.kind === 'ready' ? orderEntries(level.entries) : []),
+    [level],
+  )
 
   if (level === undefined || level.kind === 'loading') {
     return (
@@ -54,8 +60,6 @@ function Level({ path, tree }: { path: string; tree: FilesTreeState }) {
       </li>
     )
   }
-
-  const entries = orderEntries(level.entries)
 
   return (
     <>

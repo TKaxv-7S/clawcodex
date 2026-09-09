@@ -49,6 +49,16 @@ def _failure(code: str, message: str, **details: Any) -> dict[str, Any]:
     return {"ok": False, "error": error}
 
 
+def _inside(root: Path, path: Path) -> bool:
+    """Whether ``path`` resolves inside ``root``. Both sides fully resolved, so
+    a symlink pointing out of the tree is outside it however it was reached."""
+    try:
+        resolved = path.resolve()
+    except OSError:  # pragma: no cover - platform-specific
+        return False
+    return resolved == root or root in resolved.parents
+
+
 def _resolve(root: str, path: str | None) -> tuple[Path, Path] | dict[str, Any]:
     """The (resolved root, resolved target) pair, or the failure that stops it.
 
@@ -65,8 +75,11 @@ def _resolve(root: str, path: str | None) -> tuple[Path, Path] | dict[str, Any]:
     except OSError as exc:  # pragma: no cover - platform-specific
         return _failure("unavailable", f"cannot resolve {root}: {exc}")
 
-    raw = (path or "").strip()
-    candidate = Path(raw).expanduser() if raw else resolved_root
+    # Stripped only to decide "no path given": a POSIX filename may legally
+    # begin or end with a space, and trimming it would silently read a
+    # different file.
+    raw = path or ""
+    candidate = Path(raw).expanduser() if raw.strip() else resolved_root
     if not candidate.is_absolute():
         candidate = resolved_root / candidate
 
@@ -78,7 +91,7 @@ def _resolve(root: str, path: str | None) -> tuple[Path, Path] | dict[str, Any]:
     except OSError as exc:  # pragma: no cover - platform-specific
         return _failure("unavailable", f"cannot resolve {candidate}: {exc}")
 
-    if resolved != resolved_root and resolved_root not in resolved.parents:
+    if not (resolved == resolved_root or resolved_root in resolved.parents):
         return _failure(
             "outside-workspace",
             "That path is outside the workspace, so the sidebar will not read it.",
@@ -126,6 +139,8 @@ def read_file(
     except OSError as exc:
         return _failure("unavailable", f"cannot read {target}: {exc}")
 
+    # Checked before opening: a FIFO would block `open` itself, and this socket
+    # also carries the turn's stream.
     if not stat_module.S_ISREG(stat.st_mode):
         return _failure(
             "not-regular-file", "That is not a regular file, so it has no text to show."
@@ -139,6 +154,11 @@ def read_file(
         # fail as `not-text` rather than raise out of the line iterator halfway
         # through, and the byte cap has to be measured on bytes.
         with target.open("rb") as handle:
+            # Re-stat the open handle: the version has to describe the bytes
+            # this page came from. A write between the stat above and this open
+            # would otherwise label new content with the old version, and the
+            # client would merge two files into one.
+            stat = os.fstat(handle.fileno())
             for _ in range(start - 1):
                 if handle.readline() == b"":
                     break
@@ -203,15 +223,13 @@ def list_dir(root: str, path: str | None = None) -> dict[str, Any]:
     resolved = _resolve(root, path)
     if isinstance(resolved, dict):
         return resolved
-    _, target = resolved
-
-    if not target.exists():
-        return _failure("not-found", "That directory is gone. It may have been moved or deleted.")
-    if not target.is_dir():
-        return _failure("not-directory", "That is not a directory.")
+    resolved_root, target = resolved
 
     entries: list[dict[str, Any]] = []
     truncated = False
+    # No `exists()` / `is_dir()` probe first: both swallow the OSError, so an
+    # unreadable directory would be reported as a missing one. `scandir` raises
+    # the error that actually happened.
     try:
         with os.scandir(target) as scan:
             for item in scan:
@@ -219,6 +237,13 @@ def list_dir(root: str, path: str | None = None) -> dict[str, Any]:
                     truncated = True
                     break
                 try:
+                    # A link whose target is outside the tree reads as `other`:
+                    # the reads below would refuse it, and a row that always
+                    # fails when clicked is worse than one that says it cannot
+                    # be opened.
+                    if item.is_symlink() and not _inside(resolved_root, Path(item.path)):
+                        entries.append({"name": item.name, "type": "other"})
+                        continue
                     if item.is_dir(follow_symlinks=True):
                         entries.append({"name": item.name, "type": "directory"})
                         continue
@@ -236,6 +261,10 @@ def list_dir(root: str, path: str | None = None) -> dict[str, Any]:
                     # directory, just not one that can be opened.
                     pass
                 entries.append({"name": item.name, "type": "other"})
+    except FileNotFoundError:
+        return _failure("not-found", "That directory is gone. It may have been moved or deleted.")
+    except NotADirectoryError:
+        return _failure("not-directory", "That is not a directory.")
     except PermissionError:
         return _failure("unavailable", f"permission denied: {target}")
     except OSError as exc:

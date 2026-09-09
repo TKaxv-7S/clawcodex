@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { GatewayClient } from '../gateway/client.ts'
 import type { WorkspaceEntry } from '../gateway/protocol.ts'
 import { setGatewayClient } from '../state/actions.ts'
-import { $workspace } from '../state/store.ts'
+import { $sessionId, $workspace } from '../state/store.ts'
 import {
   $filesTree,
   childPath,
@@ -24,12 +24,14 @@ function level(entries: WorkspaceEntry[], truncated = false) {
 beforeEach(() => {
   request.mockReset()
   setGatewayClient({ request } as unknown as GatewayClient)
+  $sessionId.set('s1')
   $workspace.set('/repo')
   resetTree()
 })
 
 afterEach(() => {
   setGatewayClient(null)
+  $sessionId.set(null)
   $workspace.set('')
   resetTree()
 })
@@ -86,7 +88,7 @@ describe('the tree', () => {
     await startTree('/repo')
 
     expect(request).toHaveBeenCalledTimes(1)
-    expect(request).toHaveBeenCalledWith('fs.list_dir', { cwd: '/repo', path: '/repo' })
+    expect(request).toHaveBeenCalledWith('fs.list_dir', { path: '/repo', session_id: 's1' })
     expect($filesTree.get().expanded).toEqual(['/repo'])
   })
 

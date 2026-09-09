@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { GatewayClient } from '../gateway/client.ts'
 import type { WorkspaceEntry } from '../gateway/protocol.ts'
 import { setGatewayClient } from '../state/actions.ts'
-import { $workspace } from '../state/store.ts'
+import { $sessionId, $workspace } from '../state/store.ts'
 import { resetTree } from './files-store.ts'
 import { FilesTree, workspaceTitle } from './FilesTree.tsx'
 import { $activeTabId, $tabs, resetSidebar } from './store.ts'
@@ -18,6 +18,7 @@ function level(entries: WorkspaceEntry[], truncated = false) {
 beforeEach(() => {
   request.mockReset()
   setGatewayClient({ request } as unknown as GatewayClient)
+  $sessionId.set('s1')
   $workspace.set('/repo')
   resetTree()
   resetSidebar()
@@ -26,6 +27,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   setGatewayClient(null)
+  $sessionId.set(null)
   $workspace.set('')
   resetTree()
   resetSidebar()
@@ -81,8 +83,8 @@ describe('FilesTree', () => {
       expect(screen.getByText('app.ts')).toBeTruthy()
     })
     expect(request).toHaveBeenLastCalledWith('fs.list_dir', {
-      cwd: '/repo',
       path: '/repo/src',
+      session_id: 's1',
     })
   })
 

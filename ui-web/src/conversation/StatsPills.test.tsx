@@ -172,8 +172,10 @@ describe('StatsPills', () => {
 
     render(<StatsPills stats={untokened} />)
 
-    expect(text()).not.toContain('tok ')
-    expect(screen.queryByRole('button', { name: /cached/ })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /1 turn/ }))
+
+    expect(document.querySelector('[data-session-stats-usage]')).toBeNull()
+    expect(screen.queryByRole('button', { name: /tok$|cached/ })).toBeNull()
     expect(text()).toContain('2 steps')
   })
 })

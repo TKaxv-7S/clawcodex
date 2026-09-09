@@ -605,6 +605,7 @@ export function hydrateStoredTrajectory(
 /* ── aggregates ──────────────────────────────────────────────────────────── */
 
 export interface TrajectoryStats {
+  /** Cache reads over everything the prompt side was billed for. */
   cacheHitRatio: number | null
   /** Prompt tokens served from cache — one of the three billed input buckets. */
   cacheReadTokens: number
@@ -683,8 +684,14 @@ export function trajectoryStats(state: TrajectoryState): TrajectoryStats {
 
   const generationSeconds = generationMs / 1000
 
+  // Everything the prompt side was billed for. Cache WRITES are a miss — the
+  // tokens were processed in full and charged for — so they belong in the
+  // denominator; leaving them out reported a higher hit rate than the exact
+  // counts beside it add up to.
+  const billedInput = uncachedInput + cacheRead + cacheWrite
+
   return {
-    cacheHitRatio: inputTokens > 0 ? cacheRead / inputTokens : null,
+    cacheHitRatio: billedInput > 0 ? cacheRead / billedInput : null,
     cacheReadTokens: cacheRead,
     cacheWriteTokens: cacheWrite,
     inputTokens,

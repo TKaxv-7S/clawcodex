@@ -15,7 +15,12 @@ export interface StatsPillsProps {
   stats: TrajectoryStats
 }
 
-/** The three disjoint prompt-side buckets the run was billed for. */
+/**
+ * The three disjoint prompt-side buckets the run was billed for.
+ *
+ * The same sum `cacheHitRatio` divides into, so the pill's percentage and the
+ * dialog's counts describe one arithmetic rather than two.
+ */
 export function billedInput(stats: TrajectoryStats): number {
   return stats.uncachedInputTokens + stats.cacheReadTokens + stats.cacheWriteTokens
 }

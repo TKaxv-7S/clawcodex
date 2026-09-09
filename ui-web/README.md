@@ -68,11 +68,15 @@ it leaned on — and grows a tab for anything else you point it at:
   time you open a level and kept afterwards, so collapsing and reopening costs
   nothing. Clicking a file opens it.
 - **A file** opens as its own tab, read a page at a time (`fs.read_file`, 2000
-  lines or 2 MB per page, whichever comes first), with **Load more** at the end
-  of the loaded text until the file ends. A `read` row in the conversation hands
-  its 1-based `offset` along, so the file opens where the agent was looking.
-  Wrap, scroll offset and the page you were on live with the tab, not with the
-  component — switching tabs and coming back does not re-read anything.
+  lines per page), with **Load more** at the end of the loaded text until the
+  file ends. A `read` row in the conversation hands its 1-based `offset` along,
+  so the file opens where the agent was looking — walking forward at most five
+  pages, because each page is a round trip whose backend re-reads the lines
+  before it. Wrap, scroll offset and the page you were on live with the tab, not
+  with the component — switching tabs and coming back does not re-read anything.
+  A page is also capped at 2 MB, and a page over that is **refused** rather than
+  truncated: a file whose first line is bigger than the cap (a minified bundle,
+  a one-line JSON dump) therefore cannot be shown here at all.
 
 A tab's identity is its path, so opening the same file twice reveals the tab it
 is already in (and jumps again) rather than stacking duplicates. Full screen
@@ -86,9 +90,11 @@ notice never applies itself: reloading under a reader loses their place, and a
 file the agent is writing changes repeatedly.
 
 Both reads are confined to the session's workspace root, symlinks resolved
-(`src/server/desktop_workspace_files.py`). That is honesty rather than a
-security boundary — the agent in that same process can read the disk — but a
-column that says it is showing the workspace must not be reachable through `..`.
+(`src/server/desktop_workspace_files.py`). The client names the *session*, never
+the root: the backend derives the boundary, because one the client can move is
+not a boundary. That is honesty rather than a security boundary — the agent in
+that same process can read the disk — but a column that says it is showing the
+workspace must not be reachable through `..`.
 
 ## Trajectory
 
@@ -120,9 +126,14 @@ worse than the empty state.
 
 One semantic worth knowing: `usage.input` is the cache **miss**, not the whole
 prompt — the backend splits a prompt into what it paid full price for and what
-came from cache, because they bill differently. The full prompt is
-`input + cache_read`, which is what the UI shows and what the cache-hit rate is
-computed against.
+came from cache, because they bill differently. `input + cache_read` is the full
+prompt, which is what the Trajectory shows.
+
+The **cache-hit rate** divides by a third bucket as well: `cache_write` (tokens
+written into the cache) was processed in full and charged for, so it is a miss.
+The rate is `cache_read / (input + cache_read + cache_write)` — the same sum the
+usage pill's dialog itemises, so the percentage and the counts under it describe
+one arithmetic.
 
 ## Development
 

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { FilePage } from '../gateway/protocol.ts'
 import type { GatewayClient } from '../gateway/client.ts'
 import { setGatewayClient } from '../state/actions.ts'
-import { $workspace } from '../state/store.ts'
+import { $sessionId, $workspace } from '../state/store.ts'
 import {
   $textTabs,
   applyPage,
@@ -38,12 +38,14 @@ function page(over: Partial<FilePage> = {}): { ok: true } & FilePage {
 beforeEach(() => {
   request.mockReset()
   setGatewayClient({ request } as unknown as GatewayClient)
+  $sessionId.set('s1')
   $workspace.set('/repo')
   resetTextTabs()
 })
 
 afterEach(() => {
   setGatewayClient(null)
+  $sessionId.set(null)
   $workspace.set('')
   resetTextTabs()
 })
@@ -103,9 +105,9 @@ describe('loadPage', () => {
     await loadPage('t1', '/repo/a.ts', 1)
 
     expect(request).toHaveBeenCalledWith('fs.read_file', {
-      cwd: '/repo',
       offset: 1,
       path: '/repo/a.ts',
+      session_id: 's1',
     })
     expect($textTabs.get().t1?.pages[1]?.text).toBe('one\ntwo')
     expect($textTabs.get().t1?.eof).toBe(true)
@@ -195,12 +197,16 @@ describe('reloadPages', () => {
   })
 
   it('keeps the reader where they were', async () => {
-    request.mockResolvedValue(page())
+    request.mockResolvedValueOnce(page())
     await loadPage('t1', '/repo/a.ts', 1)
     setScroll('t1', 420)
 
+    request.mockResolvedValueOnce(page({ text: 'reloaded', version: 'v2' }))
     await reloadPages('t1', '/repo/a.ts')
 
+    // The pages really were read again — the offset survives that, rather than
+    // surviving because nothing happened.
+    expect($textTabs.get().t1?.pages[1]?.text).toBe('reloaded')
     expect($textTabs.get().t1?.scrollTop).toBe(420)
   })
 

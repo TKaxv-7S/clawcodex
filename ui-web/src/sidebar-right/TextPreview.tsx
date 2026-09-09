@@ -37,11 +37,23 @@ export interface TextPreviewProps {
   tabId: string
 }
 
-/** Put one line at the top of the body. A line not loaded leaves it alone. */
+/** Pages a jump-to-line may load on its own before it gives up and stops. */
+const WALK_PAGE_LIMIT = 5
+
+/**
+ * Put one line at the top of the body. A line not loaded leaves it alone.
+ *
+ * Measured as the gap between the two boxes rather than through `offsetTop`,
+ * which reports a distance from the nearest *positioned* ancestor — the app
+ * frame, several boxes up — and would land the line 76-odd pixels above the
+ * viewport, i.e. off the top of it.
+ */
 export function scrollToLine(body: HTMLElement, line: number): void {
   const row = body.querySelector(`[data-preview-line="${line}"]`)
 
-  if (row instanceof HTMLElement) body.scrollTop = row.offsetTop
+  if (!(row instanceof HTMLElement)) return
+
+  body.scrollTop += row.getBoundingClientRect().top - body.getBoundingClientRect().top
 }
 
 export function TextPreview({ path, tabId }: TextPreviewProps) {
@@ -76,6 +88,11 @@ export function TextPreview({ path, tabId }: TextPreviewProps) {
   // Answer a navigation once. A line the pages do not reach yet loads the next
   // page — again, until they cover it or the file ends — because pages load in
   // order and there is no seek.
+  //
+  // Bounded, though: each page is a round trip whose backend re-reads every
+  // line before it, so walking to line 200,000 would be a hundred sequential
+  // reads costing quadratic work. Past the bound the reader is left at the end
+  // of the loaded text with Load more, which is honest about the cost.
   useEffect(() => {
     const element = body.current
 
@@ -87,7 +104,7 @@ export function TextPreview({ path, tabId }: TextPreviewProps) {
       return
     }
 
-    if (line > loadedThrough && !state.eof) {
+    if (line > loadedThrough && !state.eof && pages.length < WALK_PAGE_LIMIT) {
       if (!state.loading && state.failure === undefined) {
         void loadPage(tabId, path, loadedThrough + 1)
       }
@@ -103,6 +120,7 @@ export function TextPreview({ path, tabId }: TextPreviewProps) {
   }, [
     line,
     loadedThrough,
+    pages.length,
     path,
     revision,
     state?.answered,

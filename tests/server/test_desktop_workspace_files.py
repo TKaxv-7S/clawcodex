@@ -188,6 +188,17 @@ def test_a_symlink_staying_inside_the_workspace_is_read(workspace):
     assert page["text"] == "inside"
 
 
+def test_a_filename_keeps_the_spaces_it_was_given(workspace):
+    # A POSIX name may legally begin or end with a space; trimming it would
+    # read a different file, or none.
+    (workspace / " spaced.txt").write_text("held\n", encoding="utf-8")
+
+    page = read_file(str(workspace), " spaced.txt")
+
+    assert page["ok"] is True
+    assert page["text"] == "held"
+
+
 def test_a_session_without_a_workspace_says_so(workspace):
     result = read_file("", "notes.txt")
 
@@ -249,6 +260,45 @@ def test_a_broken_link_is_listed_as_something_that_cannot_be_opened(workspace):
     assert entries == [{"name": "dangling", "type": "other"}]
 
 
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation needs privileges on Windows")
+def test_a_link_out_of_the_workspace_is_not_offered_as_openable(workspace, tmp_path):
+    """Reported, but not as a file: opening it would be refused every time."""
+    (tmp_path / "outside.txt").write_text("private\n", encoding="utf-8")
+    (tmp_path / "outside").mkdir()
+    (workspace / "escape.txt").symlink_to(tmp_path / "outside.txt")
+    (workspace / "escape-dir").symlink_to(tmp_path / "outside")
+
+    entries = list_dir(str(workspace))["entries"]
+
+    assert {entry["name"]: entry["type"] for entry in entries} == {
+        "escape.txt": "other",
+        "escape-dir": "other",
+    }
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory permissions")
+def test_an_unreadable_directory_does_not_read_as_a_missing_one(workspace):
+    locked = workspace / "locked"
+    locked.mkdir()
+    locked.chmod(0o000)
+    try:
+        result = list_dir(str(workspace), "locked")
+    finally:
+        locked.chmod(0o755)
+
+    assert result["error"]["code"] == "workspace-file/unavailable"
+
+
+def test_a_level_of_exactly_the_cap_is_not_reported_as_cut(workspace):
+    for index in range(MAX_ENTRIES):
+        (workspace / f"file-{index:04d}.txt").write_text("x", encoding="utf-8")
+
+    listing = list_dir(str(workspace))
+
+    assert len(listing["entries"]) == MAX_ENTRIES
+    assert listing["truncated"] is False
+
+
 def test_a_long_level_is_cut_and_says_so(workspace):
     for index in range(MAX_ENTRIES + 5):
         (workspace / f"file-{index:04d}.txt").write_text("x", encoding="utf-8")
@@ -307,8 +357,9 @@ def test_the_reads_are_reachable_over_the_socket(tmp_path):
     ) as ws:
         ws.receive_json()  # gateway.ready
 
-        # No cwd: the session's own workspace is the root, as the sidebar sends it.
-        _rpc(ws, "r1", "fs.list_dir", {})
+        # The root comes from the server, not the call: an unknown session id
+        # falls back to this server's workspace.
+        _rpc(ws, "r1", "fs.list_dir", {"session_id": "nobody"})
         listing = _drain_for_response(ws, "r1", [])["result"]
 
         _rpc(ws, "r2", "fs.read_file", {"path": "notes.txt"})
@@ -317,7 +368,16 @@ def test_the_reads_are_reachable_over_the_socket(tmp_path):
         _rpc(ws, "r3", "fs.read_file", {"path": "../outside.txt"})
         refused = _drain_for_response(ws, "r3", [])["result"]
 
+        # The boundary is not a parameter: naming another root does not move it.
+        _rpc(ws, "r4", "fs.read_file", {"cwd": "/", "path": "/etc/hosts"})
+        elsewhere = _drain_for_response(ws, "r4", [])["result"]
+
+        _rpc(ws, "r5", "fs.list_dir", {"cwd": "/", "path": "/etc"})
+        listed_elsewhere = _drain_for_response(ws, "r5", [])["result"]
+
     assert listing["ok"] is True
     assert [entry["name"] for entry in listing["entries"]] == ["notes.txt"]
     assert (page["text"], page["lines"], page["eof"]) == ("alpha\nbeta", 2, True)
     assert refused["error"]["code"] == "workspace-file/outside-workspace"
+    assert elsewhere["error"]["code"] == "workspace-file/outside-workspace"
+    assert listed_elsewhere["error"]["code"] == "workspace-file/outside-workspace"

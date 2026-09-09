@@ -13,13 +13,42 @@
   height: 24px;
   min-width: 0;
   overflow: hidden;
+  border-radius: 6px;
+}
+
+/* The disclosure hit target: the whole row, stretched *under* its content so
+   the content can hold a button of its own. */
+.toggle {
+  position: absolute;
+  inset: 0;
   padding: 0;
   border: none;
-  border-radius: 6px;
   background: none;
-  color: inherit;
-  font: inherit;
-  text-align: left;
+  cursor: pointer;
+}
+
+.toggle:focus-visible {
+  outline: 2px solid var(--cc-alias-state-business-primary);
+  outline-offset: -2px;
+  border-radius: 6px;
+}
+
+/* Above the overlay so it is legible, transparent to the pointer so the
+   overlay still receives the click… */
+.leading,
+.title,
+.sep,
+.summary,
+.trailing {
+  position: relative;
+  z-index: 1;
+  pointer-events: none;
+}
+
+/* …except whatever the summary put there to be clicked. */
+.summary :is(a, button),
+.trailing :is(a, button) {
+  pointer-events: auto;
 }
 
 .row[data-expandable] {

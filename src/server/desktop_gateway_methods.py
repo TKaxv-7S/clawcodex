@@ -1795,6 +1795,21 @@ class GatewayConnection:
             list_directory, str(path) if path else None
         )
 
+    def _workspace_root(self, params: dict[str, Any]) -> str:
+        """The root the workspace reads are confined to.
+
+        Derived here, never taken from the caller: the root IS the boundary,
+        and a boundary the client can move is not one. It is the addressed
+        session's working directory, falling back to this server's workspace
+        for a call made before any session exists.
+        """
+        session = self.state.sessions.get(str(params.get("session_id") or ""))
+        if session is not None:
+            cwd = session.init_info.get("cwd")
+            if isinstance(cwd, str) and cwd:
+                return cwd
+        return self.state.workspace
+
     async def fs_read_file(self, params: dict[str, Any]) -> dict[str, Any]:
         """One page of a workspace file, for the sidebar's text preview.
 
@@ -1808,15 +1823,12 @@ class GatewayConnection:
 
         from src.server.desktop_workspace_files import read_file
 
-        cwd = _clean(params.get("cwd")) or self.state.workspace
-        path = str(params.get("path") or "")
-        offset = _positive_int(params.get("offset"), 1)
         limit = params.get("limit")
         return await _asyncio.to_thread(
             read_file,
-            cwd,
-            path,
-            offset=offset,
+            self._workspace_root(params),
+            str(params.get("path") or ""),
+            offset=_positive_int(params.get("offset"), 1),
             limit=None if limit is None else _positive_int(limit, 1),
         )
 
@@ -1831,10 +1843,9 @@ class GatewayConnection:
 
         from src.server.desktop_workspace_files import list_dir
 
-        cwd = _clean(params.get("cwd")) or self.state.workspace
         path = params.get("path")
         return await _asyncio.to_thread(
-            list_dir, cwd, str(path) if path else None
+            list_dir, self._workspace_root(params), str(path) if path else None
         )
 
     async def slash_exec(self, params: dict[str, Any]) -> dict[str, Any]:

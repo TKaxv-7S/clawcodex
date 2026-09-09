@@ -786,6 +786,9 @@ function unavailable(error: unknown): { error: WorkspaceFileFailure; ok: false }
  * `offset` is 1-based, and the page length is the backend's own cap: a file has
  * no bound and a page does, so the reader asks for the next one when it reaches
  * the end of the loaded text.
+ *
+ * The session is named, never the root: the backend derives the workspace these
+ * reads are confined to, because a boundary the client can move is not one.
  */
 export async function readWorkspaceFile(
   path: string,
@@ -793,9 +796,9 @@ export async function readWorkspaceFile(
 ): Promise<WorkspaceFileResult<FilePage>> {
   try {
     return await gateway().request<WorkspaceFileResult<FilePage>>('fs.read_file', {
-      cwd: $workspace.get(),
       offset,
       path,
+      session_id: $sessionId.get(),
     })
   } catch (error) {
     return unavailable(error)
@@ -808,7 +811,7 @@ export async function listWorkspaceDir(
 ): Promise<WorkspaceFileResult<WorkspaceLevel>> {
   try {
     return await gateway().request<WorkspaceFileResult<WorkspaceLevel>>('fs.list_dir', {
-      cwd: $workspace.get(),
+      session_id: $sessionId.get(),
       ...(path === undefined ? {} : { path }),
     })
   } catch (error) {

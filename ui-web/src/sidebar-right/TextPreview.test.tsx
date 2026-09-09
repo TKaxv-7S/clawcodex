@@ -4,11 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { GatewayClient } from '../gateway/client.ts'
 import type { FilePage } from '../gateway/protocol.ts'
 import { setGatewayClient } from '../state/actions.ts'
-import { $transcript, $workspace } from '../state/store.ts'
+import { $sessionId, $transcript, $workspace } from '../state/store.ts'
 import { emptyTranscript, type ToolNode } from '../state/transcript.ts'
 import { $textTabs, resetTextTabs } from './text-store.ts'
 import { openFile, resetSidebar } from './store.ts'
-import { TextPreview } from './TextPreview.tsx'
+import { scrollToLine, TextPreview } from './TextPreview.tsx'
 
 const request = vi.fn()
 
@@ -46,6 +46,7 @@ beforeEach(() => {
   request.mockReset()
   request.mockResolvedValue(page())
   setGatewayClient({ request } as unknown as GatewayClient)
+  $sessionId.set('s1')
   $workspace.set('/repo')
   $transcript.set(emptyTranscript())
   resetSidebar()
@@ -55,10 +56,52 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   setGatewayClient(null)
+  $sessionId.set(null)
   $workspace.set('')
   $transcript.set(emptyTranscript())
   resetSidebar()
   resetTextTabs()
+})
+
+/**
+ * Fix one element's box. jsdom lays nothing out, so a scroll test that reads
+ * real geometry asserts zero against zero and passes however the code moves the
+ * scroller — the measurement has to be supplied.
+ */
+function boxed(element: Element, top: number): void {
+  element.getBoundingClientRect = () => ({ top, bottom: top + 20 }) as DOMRect
+}
+
+describe('scrollToLine', () => {
+  it('scrolls by the gap between the row and the body, not by offsetTop', () => {
+    // offsetTop is measured from the nearest POSITIONED ancestor — the app
+    // frame, several boxes up — so using it lands the line off the top of the
+    // viewport by the height of everything above the body.
+    const body = document.createElement('div')
+
+    body.innerHTML = '<div data-preview-line="7"></div>'
+    body.scrollTop = 100
+
+    const row = body.firstElementChild as HTMLElement
+
+    Object.defineProperty(row, 'offsetTop', { value: 999 })
+    boxed(body, 200)
+    boxed(row, 260)
+
+    scrollToLine(body, 7)
+
+    // 60px below the body's top, from a scroller already 100px down.
+    expect(body.scrollTop).toBe(160)
+  })
+
+  it('leaves the scroller alone for a line the pages do not hold', () => {
+    const body = document.createElement('div')
+
+    body.scrollTop = 42
+    scrollToLine(body, 7)
+
+    expect(body.scrollTop).toBe(42)
+  })
 })
 
 describe('TextPreview', () => {
@@ -107,9 +150,9 @@ describe('TextPreview', () => {
       expect(screen.getByText('four')).toBeTruthy()
     })
     expect(request).toHaveBeenLastCalledWith('fs.read_file', {
-      cwd: '/repo',
       offset: 4,
       path: '/repo/a.ts',
+      session_id: 's1',
     })
     expect(screen.queryByText('Load more')).toBeNull()
   })
@@ -205,5 +248,26 @@ describe('TextPreview', () => {
       expect(screen.getByText('five')).toBeTruthy()
     })
     expect(request).toHaveBeenCalledTimes(2)
+  })
+
+  it('stops walking rather than paging its way to a very deep line', async () => {
+    // Every page is a round trip whose backend re-reads the lines before it, so
+    // an offset deep into a large file would be a hundred sequential reads.
+    request.mockImplementation(async (_method: string, params: { offset: number }) =>
+      page({ eof: false, lines: 3, offset: params.offset, text: 'a\nb\nc' }),
+    )
+    openFile('/repo/a.ts', 100_000)
+
+    render(<TextPreview path="/repo/a.ts" tabId={TAB} />)
+
+    await screen.findByText('Load more')
+    await waitFor(() => {
+      expect(request.mock.calls.length).toBeGreaterThan(1)
+    })
+    // Bounded: the reader is left at the end of the loaded text with Load more.
+    await new Promise(resolve => {
+      setTimeout(resolve, 50)
+    })
+    expect(request.mock.calls.length).toBeLessThanOrEqual(5)
   })
 })

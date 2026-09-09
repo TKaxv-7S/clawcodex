@@ -186,10 +186,7 @@ function ToolRowImpl({ node, workspace }: ToolRowProps) {
       ) : (
         <button
           className={[css.path, css.pathLink].join(' ')}
-          onClick={event => {
-            // The row's own disclosure is the outer click target; opening a
-            // file is a different intent and must not also toggle the card.
-            event.stopPropagation()
+          onClick={() => {
             openFile(filePath, toolFileLine(node))
           }}
           title={`Open ${filePath}`}

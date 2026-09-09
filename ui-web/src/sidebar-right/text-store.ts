@@ -66,11 +66,16 @@ export function emptyTextTab(path: string): TextTabState {
 }
 
 /**
- * A read's generation, per tab. A reload bumps it, and a page that settles
- * from an older generation writes nothing — which is what keeps a slow first
- * page from landing on top of the reload that replaced it.
+ * A read's generation, per tab. A reload bumps it, and a page that settles from
+ * an older generation writes nothing — which is what keeps a slow first page
+ * from landing on top of the reload that replaced it.
+ *
+ * The ticker is global and never resets, so a number is used once for the life
+ * of the page: forgetting a tab and opening it again cannot hand the new read
+ * the generation an old one is still holding.
  */
 const generations = new Map<string, number>()
+let ticker = 0
 
 /** Fold one settled page into a bucket. Pure: the whole version rule is here. */
 export function applyPage(
@@ -150,7 +155,9 @@ export async function loadPage(tabId: string, path: string, offset: number): Pro
   else if (existing.loading) return
   else patch(tabId, { failure: undefined, loading: true })
 
-  const generation = (generations.get(tabId) ?? 0) + 1
+  ticker += 1
+
+  const generation = ticker
 
   generations.set(tabId, generation)
 
@@ -186,7 +193,8 @@ export async function loadPage(tabId: string, path: string, offset: number): Pro
 export async function reloadPages(tabId: string, path: string): Promise<void> {
   const current = $textTabs.get()[tabId]
 
-  generations.set(tabId, (generations.get(tabId) ?? 0) + 1)
+  ticker += 1
+  generations.set(tabId, ticker)
   $textTabs.setKey(tabId, {
     ...(current ?? emptyTextTab(path)),
     eof: false,
