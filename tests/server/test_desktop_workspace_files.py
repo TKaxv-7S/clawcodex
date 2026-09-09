@@ -358,6 +358,37 @@ def test_a_cut_level_counts_rather_than_spells_its_numbers(workspace, monkeypatc
     assert names == [f"file{index}.txt" for index in range(1, 6)]
 
 
+def test_a_name_carrying_a_digit_python_cannot_parse_does_not_take_the_level_out(workspace):
+    """`isdigit()` is wider than `int()` accepts, and `\\d` is narrower than both.
+
+    A superscript or a circled digit is `isdigit()` but not `isdecimal()`, and
+    `\\d` never splits it out — so it reached the numeric branch as ordinary text
+    and `int()` raised. The `ValueError` escaped the module, failed the RPC, and
+    left the whole directory unlistable with Reload hitting the same path.
+    """
+    (workspace / "²").write_text("x", encoding="utf-8")
+    (workspace / "①").write_text("x", encoding="utf-8")
+    (workspace / "normal.txt").write_text("x", encoding="utf-8")
+
+    listing = list_dir(str(workspace))
+
+    assert listing["ok"] is True
+    assert sorted(entry["name"] for entry in listing["entries"]) == sorted(
+        ["²", "①", "normal.txt"]
+    )
+
+
+def test_a_non_ascii_decimal_still_sorts_as_a_number(workspace):
+    """The narrowing must not cost the digits that do work: Arabic-Indic is
+    `Nd`, so `\\d` splits it, `isdecimal()` is true, and `int()` reads it."""
+    for numeral in ("١", "٢", "١٠"):
+        (workspace / f"file{numeral}.txt").write_text("x", encoding="utf-8")
+
+    names = [entry["name"] for entry in list_dir(str(workspace))["entries"]]
+
+    assert names == ["file١.txt", "file٢.txt", "file١٠.txt"]
+
+
 def test_the_cap_bounds_the_work_and_not_only_the_answer(workspace, monkeypatch):
     """Statting the whole level to return a slice of it is the same cost bug the
     cap exists to avoid: `readdir` hands over names for free, but every type and

@@ -78,9 +78,18 @@ def _order(name: str) -> tuple[tuple[tuple[int, Any], ...], str]:
 
     Costs no syscall: a name is all it reads. The full name is the tie-break, so
     two entries differing only in case still have a stable order.
+
+    ``isdecimal`` rather than ``isdigit``, and the difference is the whole
+    function's totality. ``\d`` splits on Unicode category ``Nd``, which is
+    exactly what ``isdecimal`` reports and exactly what ``int`` accepts;
+    ``isdigit`` is *wider* — it is true for ``²`` and ``①``, which ``\d`` never
+    split out, so they arrive as ordinary text that answers yes and then makes
+    ``int`` raise. One file named ``²`` used to take its whole directory out
+    that way, with the ``ValueError`` escaping this module entirely. With the
+    three sets lined up, ``int`` here can never raise.
     """
     parts = tuple(
-        (1, int(part)) if part.isdigit() else (0, part)
+        (1, int(part)) if part.isdecimal() else (0, part)
         for part in re.split(r"(\d+)", name.lower())
     )
 
