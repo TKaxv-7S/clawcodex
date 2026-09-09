@@ -223,7 +223,9 @@ def test_lists_the_root_when_no_path_is_given(workspace):
 
 
 def test_a_file_entry_carries_its_size(workspace):
-    (workspace / "README.md").write_text("hello\n", encoding="utf-8")
+    # Bytes, not text: Python's text mode would write "\r\n" on Windows and
+    # make this six-byte file seven bytes long there.
+    (workspace / "README.md").write_bytes(b"hello\n")
 
     entry = list_dir(str(workspace))["entries"][0]
 
