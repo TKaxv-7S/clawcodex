@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import type { TrajectoryStats } from '../state/trajectory.ts'
-import { StatsPills } from './StatsPills.tsx'
+import { cacheHitPercent, formatSpeed, StatsPills } from './StatsPills.tsx'
 
 afterEach(cleanup)
 
@@ -38,6 +38,33 @@ const RAN: TrajectoryStats = {
 
 const text = (): string => document.body.textContent ?? ''
 
+describe('cacheHitPercent', () => {
+  it('never rounds a partial hit up to a full one', () => {
+    // "100% cached" has to mean every prompt token came from cache; a 99.7%
+    // run reading 100% is the one a person would act on differently.
+    expect(cacheHitPercent(0.997)).toBe('99.7')
+    expect(cacheHitPercent(0.9997)).toBe('99.97')
+    expect(cacheHitPercent(0.99997)).toBe('99.997')
+  })
+
+  it('keeps a whole number whole, and a full hit at 100', () => {
+    expect(cacheHitPercent(0.55)).toBe('55')
+    expect(cacheHitPercent(1)).toBe('100')
+  })
+})
+
+describe('formatSpeed', () => {
+  it('keeps the digit that matters below 10', () => {
+    // "0 tok/s" would report a stalled run that is merely slow.
+    expect(formatSpeed(0.4)).toBe('0.4')
+    expect(formatSpeed(3.42)).toBe('3.4')
+  })
+
+  it('drops it above 10, where it carries nothing', () => {
+    expect(formatSpeed(156.4)).toBe('156')
+  })
+})
+
 describe('StatsPills', () => {
   it('renders nothing before a turn with no model to name', () => {
     // A row holding nothing but separators is worse than no row.
@@ -68,7 +95,8 @@ describe('StatsPills', () => {
     expect(shown).toContain('1 turn')
     expect(shown).toContain('2 steps')
     expect(shown).toContain('156 tok/s')
-    expect(shown).toContain('32K tok')
+    // 31.9K, not 32K: the digit is the point of the K range.
+    expect(shown).toContain('31.9K tok')
     expect(shown).toContain('55% cached')
   })
 

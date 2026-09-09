@@ -30,6 +30,30 @@ function exact(value: number): string {
 }
 
 /**
+ * A cache-hit share that never rounds a partial hit up to a full one.
+ *
+ * `100%` has to mean every prompt token came from cache; a 99.7% run reading
+ * `100% cached` is the one reading a person would act on differently. Precision
+ * escalates until the figure stays under 100, and a genuine full hit is `100`.
+ */
+export function cacheHitPercent(ratio: number): string {
+  if (ratio >= 1) return '100'
+
+  for (const places of [0, 1, 2, 3]) {
+    const shown = (ratio * 100).toFixed(places)
+
+    if (Number(shown) < 100) return shown
+  }
+
+  return '99.999'
+}
+
+/** Output speed: the digit matters below 10, where `0 tok/s` would be a lie. */
+export function formatSpeed(tps: number): string {
+  return tps >= 10 ? tps.toFixed(0) : String(Math.round(tps * 10) / 10)
+}
+
+/**
  * The run's totals under the composer: what it did, and what it cost.
  *
  * Two pills rather than one line of figures. The line this replaced put turn
@@ -59,9 +83,9 @@ export function StatsPills({ model, nano = false, provider, stats }: StatsPillsP
   const counts = `${stats.turns} ${stats.turns === 1 ? 'turn' : 'turns'} · ${stats.steps} ${
     stats.steps === 1 ? 'step' : 'steps'
   }`
-  const speed = stats.throughput === null ? null : `${stats.throughput.toFixed(0)} tok/s`
+  const speed = stats.throughput === null ? null : `${formatSpeed(stats.throughput)} tok/s`
   const cacheHit =
-    stats.cacheHitRatio === null ? null : `${Math.round(stats.cacheHitRatio * 100)}% cached`
+    stats.cacheHitRatio === null ? null : `${cacheHitPercent(stats.cacheHitRatio)}% cached`
   const countsLabel = speed === null ? counts : `${counts} · ${speed}`
 
   const gauge = (
@@ -148,7 +172,7 @@ export function StatsPills({ model, nano = false, provider, stats }: StatsPillsP
               {stats.throughput !== null && (
                 <>
                   <dt>Output speed</dt>
-                  <dd>{stats.throughput.toFixed(0)} tok/s</dd>
+                  <dd>{formatSpeed(stats.throughput)} tok/s</dd>
                 </>
               )}
             </dl>
@@ -202,7 +226,7 @@ export function StatsPills({ model, nano = false, provider, stats }: StatsPillsP
             {cacheHit !== null && (
               <>
                 <dt>Cache hit</dt>
-                <dd>{Math.round((stats.cacheHitRatio ?? 0) * 100)}%</dd>
+                <dd>{cacheHitPercent(stats.cacheHitRatio ?? 0)}%</dd>
               </>
             )}
             <dt>Input</dt>

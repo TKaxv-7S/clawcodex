@@ -718,9 +718,22 @@ export function formatMs(ms: number | null): string {
   return `${minutes}m ${((ms % 60_000) / 1000).toFixed(0)}s`
 }
 
+/**
+ * A token count at reading width: `517`, `12.2K`, `517K`, `1.2M`.
+ *
+ * One decimal while the scaled figure is under 100, none above it — the digit
+ * carries information at 12.2K and none at 517.3K — and never a bare `.0`,
+ * which reads as false precision on a round number.
+ */
 export function formatTokens(value: number): string {
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
-  if (value >= 1_000) return `${Math.round(value / 1_000)}K`
+  const scaled = (amount: number, suffix: string): string => {
+    const shown = amount < 100 ? Math.round(amount * 10) / 10 : Math.round(amount)
+
+    return `${shown}${suffix}`
+  }
+
+  if (value >= 1_000_000) return scaled(value / 1_000_000, 'M')
+  if (value >= 1_000) return scaled(value / 1_000, 'K')
 
   return String(value)
 }

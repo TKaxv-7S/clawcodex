@@ -5,6 +5,7 @@ import {
   applyTrajectoryEvent,
   emptyTrajectory,
   formatMs,
+  formatTokens,
   hydrateStoredTrajectory,
   recordPrompt,
   stepMetrics,
@@ -246,6 +247,25 @@ describe('failures', () => {
     )
 
     expect(state.records).toEqual([])
+  })
+})
+
+describe('formatTokens', () => {
+  it('keeps a decimal while it carries information', () => {
+    // 12.2K says something 12K does not; 517K says all there is to say.
+    expect(formatTokens(12_200)).toBe('12.2K')
+    expect(formatTokens(1_400)).toBe('1.4K')
+    expect(formatTokens(517_300)).toBe('517K')
+    expect(formatTokens(1_240_000)).toBe('1.2M')
+  })
+
+  it('never shows a bare .0, which reads as precision it does not have', () => {
+    expect(formatTokens(1_000_000)).toBe('1M')
+    expect(formatTokens(2_000)).toBe('2K')
+  })
+
+  it('leaves a count under a thousand alone', () => {
+    expect(formatTokens(517)).toBe('517')
   })
 })
 

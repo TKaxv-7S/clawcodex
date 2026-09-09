@@ -95,6 +95,11 @@ made **outside** the agent is not announced, and Reload is there for it. The
 notice never applies itself: reloading under a reader loses their place, and a
 file the agent is writing changes repeatedly.
 
+For the same reason a file **deleted** under the reader says nothing: there is
+no `stat` channel to fail on, so the loaded pages simply stay on screen until
+Reload reports it. A failure while *reading* is announced, at the end of the
+loaded text — but a file already read to `eof` has no next page to fail.
+
 Both reads are confined to the session's workspace root, symlinks resolved
 (`src/server/desktop_workspace_files.py`). The client names the *session*, never
 the root: the backend derives the boundary, because one the client can move is
@@ -129,6 +134,13 @@ A metric that could not be measured says so ("First token unavailable") rather
 than showing a zero. That is why a **resumed** session starts with an empty
 ledger: a replayed transcript carries no timings, and inventing them would be
 worse than the empty state.
+
+The same rule costs a resumed session its **token pill**. A stored transcript
+carries no per-request usage — `session.usage` reports the context window's
+occupancy, not what the run was billed — so the counts cannot be rebuilt, and
+the pill is dropped rather than shown as zeros, which would read as "this run
+was free". The gauge pill stays: turns, steps and durations *are* rebuilt from
+the stored messages.
 
 One semantic worth knowing: `usage.input` is the cache **miss**, not the whole
 prompt — the backend splits a prompt into what it paid full price for and what
