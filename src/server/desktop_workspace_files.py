@@ -191,15 +191,15 @@ def read_file(
     except UnicodeDecodeError:
         return _failure("not-text", "That is not a text file, so it cannot be shown here.")
 
-    # CRLF is a line ending, not a character in the line: the client splits on
-    # "\n" and would otherwise render a stray carriage return at every line end
-    # of a file written on Windows.
-    # A NUL byte is valid UTF-8, so `decode` alone lets a binary through: a
+    # A NUL byte is valid UTF-8, so decoding alone lets a binary through: a
     # UTF-16 file of ASCII decodes cleanly and would render as text interleaved
     # with invisible NULs. The reference service scans the page for one too.
     if "\x00" in decoded:
         return _failure("not-text", "That is not a text file, so it cannot be shown here.")
 
+    # CRLF is a line ending, not a character in the line: the client splits on
+    # "\n" and would otherwise render a stray carriage return at every line end
+    # of a file written on Windows.
     text = decoded.replace("\r\n", "\n")
     # The page's terminator is not part of its last line either: the client
     # renders one block per line and adds the break itself, and keeping the
@@ -230,10 +230,17 @@ def list_dir(root: str, path: str | None = None) -> dict[str, Any]:
 
     **The level is ordered before it is cut.** The client sorts what arrives,
     but sorting a cut made in ``scandir`` order only makes an arbitrary sample
-    look deliberate: over the cap you would get *some* 500 of the children, so
+    look deliberate: over the cap you would get *some* N of the children, so
     ``a.txt`` could be missing while ``z.txt`` was present, and Reload — which
     walks the same directory in the same order — would keep hiding it. Cutting
     the alphabetical tail is what ``truncated`` actually claims.
+
+    The order is case-insensitive by name, which is close to but not identical
+    to the order the reader sees: the client groups directories first and
+    collates numerically (``file2`` before ``file10``). Matching that here would
+    need every child's type, which is the stat-per-child this deliberately
+    avoids — so over the cap the cut can fall a few names from where the
+    displayed list ends. Stated in ``ui-web/README.md``.
     """
     resolved = _resolve(root, path)
     if isinstance(resolved, dict):
@@ -241,13 +248,22 @@ def list_dir(root: str, path: str | None = None) -> dict[str, Any]:
     resolved_root, target = resolved
 
     entries: list[dict[str, Any]] = []
+    truncated = False
     # No `exists()` / `is_dir()` probe first: both swallow the OSError, so an
     # unreadable directory would be reported as a missing one. `scandir` raises
     # the error that actually happened.
     try:
         with os.scandir(target) as scan:
-            listing = sorted(scan, key=lambda item: item.name)
-            for item in listing:
+            # Ordered on the names alone, which `readdir` already handed over,
+            # and cut BEFORE anything is stat'd: every branch below costs a
+            # syscall per child, so statting the whole level to return 2000 of
+            # it would make a directory of 200k children pay 200k syscalls for
+            # a 2000-row answer. The cap has to bound the work, not just the
+            # payload.
+            listing = sorted(scan, key=lambda item: (item.name.lower(), item.name))
+            truncated = len(listing) > MAX_ENTRIES
+
+            for item in listing[:MAX_ENTRIES]:
                 try:
                     # A link whose target is outside the tree reads as `other`:
                     # the reads below would refuse it, and a row that always
@@ -282,12 +298,10 @@ def list_dir(root: str, path: str | None = None) -> dict[str, Any]:
     except OSError as exc:
         return _failure("unavailable", f"cannot read {target}: {exc}")
 
-    truncated = len(entries) > MAX_ENTRIES
-
     return {
         "ok": True,
         "absolute_path": str(target),
-        "entries": entries[:MAX_ENTRIES],
+        "entries": entries,
         "truncated": truncated,
     }
 
