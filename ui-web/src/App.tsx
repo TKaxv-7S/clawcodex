@@ -2,13 +2,14 @@ import { useStore } from '@nanostores/react'
 import { useEffect } from 'react'
 
 import { ConversationRoot } from './conversation/ConversationRoot.tsx'
-import { DetailsPanel } from './details/DetailsPanel.tsx'
 import { SettingsOverlay } from './settings/SettingsOverlay.tsx'
+import { SidebarRight } from './sidebar-right/SidebarRight.tsx'
+import { closeSidebar, resetSidebar } from './sidebar-right/store.ts'
 import { AppFrame } from './layout/AppFrame.tsx'
 import { Sidebar } from './sidebar/Sidebar.tsx'
 import { createSession, start } from './state/actions.ts'
-import { $detailsWidth, closeDetails, openDetails, toggleSidebar } from './state/layout.ts'
-import { $bootError, $bootPhase, $workspace } from './state/store.ts'
+import { $detailsWidth, openDetails, toggleSidebar } from './state/layout.ts'
+import { $bootError, $bootPhase, $sessionId, $workspace } from './state/store.ts'
 import { installTheme } from './state/theme.ts'
 import { Button } from './ui/primitives/Button.tsx'
 import { BrandMark } from './ui/BrandMark.tsx'
@@ -55,9 +56,16 @@ export function App() {
   const phase = useStore($bootPhase)
   const error = useStore($bootError)
   const detailsWidth = useStore($detailsWidth)
+  const sessionId = useStore($sessionId)
   const workspace = useStore($workspace)
 
   useEffect(() => installTheme(), [])
+
+  // The right column's open files belong to one session's workspace. Carrying
+  // them into another would show a tree rooted somewhere the reader never went.
+  useEffect(() => {
+    resetSidebar()
+  }, [sessionId])
 
   useEffect(() => {
     void start()
@@ -80,7 +88,7 @@ export function App() {
         event.preventDefault()
 
         if ($detailsWidth.get() === 0) openDetails()
-        else closeDetails()
+        else closeSidebar()
 
         return
       }
@@ -110,7 +118,7 @@ export function App() {
     <>
       <AppFrame
         conversation={<ConversationRoot />}
-        details={detailsWidth === 0 ? null : <DetailsPanel />}
+        details={detailsWidth === 0 ? null : <SidebarRight />}
         sidebar={state => <Sidebar collapsed={state.collapsed} />}
       />
       {/* Outside the frame: it covers the whole app, including the sidebar

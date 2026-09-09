@@ -605,7 +605,13 @@ export function hydrateStoredTrajectory(
 /* ── aggregates ──────────────────────────────────────────────────────────── */
 
 export interface TrajectoryStats {
+  /** Cache reads over everything the prompt side was billed for. */
   cacheHitRatio: number | null
+  /** Prompt tokens served from cache — one of the three billed input buckets. */
+  cacheReadTokens: number
+  /** Prompt tokens written INTO the cache; disjoint from the other two. */
+  cacheWriteTokens: number
+  /** The whole prompt: what was paid for in full plus what came from cache. */
   inputTokens: number
   llmMs: number
   outputTokens: number
@@ -615,6 +621,8 @@ export interface TrajectoryStats {
   /** Mean TTFT over the steps that recorded one. */
   ttftMs: number | null
   turns: number
+  /** The prompt tokens billed at full price — the cache MISS. */
+  uncachedInputTokens: number
 }
 
 /**
@@ -631,6 +639,8 @@ export function trajectoryStats(state: TrajectoryState): TrajectoryStats {
   let inputTokens = 0
   let outputTokens = 0
   let cacheRead = 0
+  let cacheWrite = 0
+  let uncachedInput = 0
   let generationMs = 0
   let generationTokens = 0
   const ttfts: number[] = []
@@ -663,6 +673,8 @@ export function trajectoryStats(state: TrajectoryState): TrajectoryStats {
     inputTokens += promptTokens(usage)
     outputTokens += usage.output
     cacheRead += usage.cache_read ?? 0
+    cacheWrite += usage.cache_write ?? 0
+    uncachedInput += usage.input
 
     if (metrics.firstTokenAt !== null && metrics.completedAt !== null) {
       generationMs += Math.max(0, metrics.completedAt - metrics.firstTokenAt)
@@ -672,8 +684,16 @@ export function trajectoryStats(state: TrajectoryState): TrajectoryStats {
 
   const generationSeconds = generationMs / 1000
 
+  // Everything the prompt side was billed for. Cache WRITES are a miss — the
+  // tokens were processed in full and charged for — so they belong in the
+  // denominator; leaving them out reported a higher hit rate than the exact
+  // counts beside it add up to.
+  const billedInput = uncachedInput + cacheRead + cacheWrite
+
   return {
-    cacheHitRatio: inputTokens > 0 ? cacheRead / inputTokens : null,
+    cacheHitRatio: billedInput > 0 ? cacheRead / billedInput : null,
+    cacheReadTokens: cacheRead,
+    cacheWriteTokens: cacheWrite,
     inputTokens,
     llmMs,
     outputTokens,
@@ -682,6 +702,7 @@ export function trajectoryStats(state: TrajectoryState): TrajectoryStats {
     toolMs,
     ttftMs: ttfts.length === 0 ? null : ttfts.reduce((a, b) => a + b, 0) / ttfts.length,
     turns: state.turn,
+    uncachedInputTokens: uncachedInput,
   }
 }
 

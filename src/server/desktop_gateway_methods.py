@@ -858,6 +858,20 @@ def _clean(value: Any) -> str | None:
     return None
 
 
+def _positive_int(value: Any, fallback: int) -> int:
+    """A positive integer from a JSON field, or ``fallback``.
+
+    A client sending `"3"`, `null`, or nonsense gets the fallback rather than a
+    500: these are display parameters, and one bad page request must not break
+    the socket the turn is streaming over.
+    """
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return parsed if parsed > 0 else fallback
+
+
 def _suggestion_scope(suggestion: dict[str, Any]) -> str:
     """Bucket a permission suggestion as a session or always/persistent grant."""
     destination = str(suggestion.get("destination") or "").lower()
@@ -897,6 +911,8 @@ class GatewayConnection:
             "complete.slash": self.complete_slash,
             "complete.path": self.complete_empty,
             "fs.list_directory": self.fs_list_directory,
+            "fs.list_dir": self.fs_list_dir,
+            "fs.read_file": self.fs_read_file,
             "fs.search_files": self.fs_search_files,
             "image.attach": self.image_attach,
             "plan.get": self.plan_get,
@@ -1777,6 +1793,59 @@ class GatewayConnection:
         path = params.get("path")
         return await _asyncio.to_thread(
             list_directory, str(path) if path else None
+        )
+
+    def _workspace_root(self, params: dict[str, Any]) -> str:
+        """The root the workspace reads are confined to.
+
+        Derived here, never taken from the caller: the root IS the boundary,
+        and a boundary the client can move is not one. It is the addressed
+        session's working directory, falling back to this server's workspace
+        for a call made before any session exists.
+        """
+        session = self.state.sessions.get(str(params.get("session_id") or ""))
+        if session is not None:
+            cwd = session.init_info.get("cwd")
+            if isinstance(cwd, str) and cwd:
+                return cwd
+        return self.state.workspace
+
+    async def fs_read_file(self, params: dict[str, Any]) -> dict[str, Any]:
+        """One page of a workspace file, for the sidebar's text preview.
+
+        Confined to the session's workspace root, and failure comes back inside
+        the result so the reader can say *why* in terms of the file — see
+        ``desktop_workspace_files``. Off the event loop, like every other
+        filesystem call on this socket: a cold or network-mounted file blocks,
+        and this socket also carries the turn's stream.
+        """
+        import asyncio as _asyncio
+
+        from src.server.desktop_workspace_files import read_file
+
+        limit = params.get("limit")
+        return await _asyncio.to_thread(
+            read_file,
+            self._workspace_root(params),
+            str(params.get("path") or ""),
+            offset=_positive_int(params.get("offset"), 1),
+            limit=None if limit is None else _positive_int(limit, 1),
+        )
+
+    async def fs_list_dir(self, params: dict[str, Any]) -> dict[str, Any]:
+        """One directory level under the workspace root, for the sidebar's tree.
+
+        Distinct from ``fs.list_directory``, which browses the whole filesystem
+        so the picker can *find* a workspace: this one never leaves the one the
+        session already has, and reports files as well as directories.
+        """
+        import asyncio as _asyncio
+
+        from src.server.desktop_workspace_files import list_dir
+
+        path = params.get("path")
+        return await _asyncio.to_thread(
+            list_dir, self._workspace_root(params), str(path) if path else None
         )
 
     async def slash_exec(self, params: dict[str, Any]) -> dict[str, Any]:

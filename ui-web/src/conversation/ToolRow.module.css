@@ -37,6 +37,26 @@
   white-space: nowrap;
 }
 
+/* The same path, as the way into the file. Quiet at rest — a dense row should
+   not sprout a blue link — and dotted underline on hover, which is the language
+   the reference client settled on for a path that opens something. */
+.pathLink {
+  padding: 0;
+  border: none;
+  background: transparent;
+  font: inherit;
+  font-family: var(--cc-font-family-code);
+  text-align: left;
+  cursor: pointer;
+}
+
+.pathLink:hover,
+.pathLink:focus-visible {
+  color: var(--cc-alias-label-primary);
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+
 .todoList {
   display: flex;
   flex-direction: column;

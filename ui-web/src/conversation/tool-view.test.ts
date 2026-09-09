@@ -10,6 +10,8 @@ import {
   shortPath,
   synthesizeDiff,
   todoSummary,
+  toolFileLine,
+  toolFilePath,
 } from './tool-view.ts'
 
 function tool(overrides: Partial<ToolNode> = {}): ToolNode {
@@ -329,5 +331,71 @@ describe('genericBodyText', () => {
     expect(genericBodyText(tool({ result: { content: 'c', output: 'o' } }))).toBe('o')
     expect(genericBodyText(tool({ result: { content: 'c' } }))).toBe('c')
     expect(genericBodyText(tool())).toBe('')
+  })
+})
+
+
+describe('toolFilePath', () => {
+  it('is empty for a tool that names no file', () => {
+    expect(toolFilePath(tool({ name: 'terminal', args: { command: 'ls' } }))).toBe('')
+  })
+
+  it('takes an absolute path as it is', () => {
+    expect(toolFilePath(tool({ name: 'read_file', args: { path: '/repo/src/app.ts' } }))).toBe(
+      '/repo/src/app.ts',
+    )
+  })
+
+  it('joins a relative path onto the workspace root', () => {
+    expect(toolFilePath(tool({ name: 'read_file', args: { path: 'src/app.ts' } }), '/repo')).toBe(
+      '/repo/src/app.ts',
+    )
+    expect(toolFilePath(tool({ name: 'read_file', args: { path: './src/app.ts' } }), '/repo')).toBe(
+      '/repo/src/app.ts',
+    )
+  })
+
+  it('joins with the separator the root itself uses', () => {
+    // A Windows root joined with "/" is a path no Windows API will take.
+    expect(
+      toolFilePath(tool({ name: 'write_file', args: { path: 'src\\app.ts' } }), 'C:\\repo'),
+    ).toBe('C:\\repo\\src\\app.ts')
+    expect(toolFilePath(tool({ name: 'write_file', args: { path: 'a.ts' } }), 'C:\\repo\\')).toBe(
+      'C:\\repo\\a.ts',
+    )
+  })
+
+  it('reads a Windows drive path as absolute', () => {
+    expect(toolFilePath(tool({ name: 'read_file', args: { path: 'C:\\repo\\a.ts' } }), '/x')).toBe(
+      'C:\\repo\\a.ts',
+    )
+  })
+
+  it('falls back to the path the result reported', () => {
+    expect(toolFilePath(tool({ name: 'write_file', result: { path: '/repo/new.ts' } }))).toBe(
+      '/repo/new.ts',
+    )
+  })
+
+  it('leaves a relative path alone when no workspace is known', () => {
+    expect(toolFilePath(tool({ name: 'read_file', args: { path: 'src/app.ts' } }))).toBe(
+      'src/app.ts',
+    )
+  })
+})
+
+describe('toolFileLine', () => {
+  it('carries a read starting line so the file opens where the agent looked', () => {
+    expect(toolFileLine(tool({ name: 'read_file', args: { offset: 40 } }))).toBe(40)
+  })
+
+  it('has no line for a write, or for a read that named none', () => {
+    expect(toolFileLine(tool({ name: 'read_file' }))).toBeUndefined()
+    expect(toolFileLine(tool({ name: 'write_file', args: { offset: 40 } }))).toBeUndefined()
+  })
+
+  it('ignores an offset that is not a line number', () => {
+    expect(toolFileLine(tool({ name: 'read_file', args: { offset: 0 } }))).toBeUndefined()
+    expect(toolFileLine(tool({ name: 'read_file', args: { offset: 'x' } }))).toBeUndefined()
   })
 })

@@ -303,6 +303,31 @@ describe('stats', () => {
     expect(stats.cacheHitRatio).toBeCloseTo(1 / 3, 3)
   })
 
+  it('counts cache writes as a miss in the hit rate', () => {
+    // Cache-creation tokens were processed in full and charged for, so they
+    // belong in the denominator. Leaving them out reported a higher hit rate
+    // than the exact counts the usage dialog lists add up to.
+    const clock = clockFrom(0)
+    let state = recordPrompt(emptyTrajectory(), 'go', clock.at)
+
+    clock.advance(100)
+    state = applyTrajectoryEvent(
+      state,
+      event('step.complete', {
+        usage: { cache_read: 200, cache_write: 200, calls: 1, input: 600, output: 10, total: 610 },
+      }),
+      clock.at,
+    )
+
+    const stats = trajectoryStats(state)
+
+    expect(stats.uncachedInputTokens).toBe(600)
+    expect(stats.cacheReadTokens).toBe(200)
+    expect(stats.cacheWriteTokens).toBe(200)
+    // 200 read of 1000 billed prompt tokens — not 200 of 800.
+    expect(stats.cacheHitRatio).toBeCloseTo(0.2, 3)
+  })
+
   it('reports no averages for an empty ledger rather than zeros', () => {
     const stats = trajectoryStats(emptyTrajectory())
 

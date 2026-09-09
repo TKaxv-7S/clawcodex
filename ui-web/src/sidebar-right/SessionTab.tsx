@@ -1,13 +1,10 @@
 import { useStore } from '@nanostores/react'
 import { useMemo } from 'react'
 
-import { shortPath } from '../conversation/tool-view.ts'
-import { closeDetails } from '../state/layout.ts'
+import { FILE_TOOLS, shortPath, toolFilePath } from '../conversation/tool-view.ts'
 import { $contextUsage, $sessionId, $transcript, $workspace } from '../state/store.ts'
-import { LayersIcon, XIcon } from '../ui/icons.tsx'
-import css from './DetailsPanel.module.css'
-
-const FILE_TOOLS = new Set(['edit_file', 'read_file', 'write_file'])
+import { openFile } from './store.ts'
+import css from './SessionTab.module.css'
 
 const VERBS: Record<string, string> = {
   edit_file: 'edited',
@@ -18,11 +15,12 @@ const VERBS: Record<string, string> = {
 /**
  * What this session has actually done, beside the conversation.
  *
- * The transcript answers "what was said"; this column answers "what changed" —
+ * The transcript answers "what was said"; this tab answers "what changed" —
  * which files the agent touched and which tools it leaned on. Both are derived
- * from the same nodes, so there is no second source of truth to drift.
+ * from the same nodes, so there is no second source of truth to drift. Each
+ * file listed opens in this same column, one tab over.
  */
-export function DetailsPanel() {
+export function SessionTab() {
   const transcript = useStore($transcript)
   const workspace = useStore($workspace)
   const sessionId = useStore($sessionId)
@@ -38,11 +36,7 @@ export function DetailsPanel() {
       // and listing it here would be a lie about the working tree.
       if (node.state !== 'done') continue
 
-      const args = node.args
-      const path =
-        (typeof args.path === 'string' ? args.path : '') ||
-        (typeof args.file_path === 'string' ? args.file_path : '') ||
-        (typeof node.result?.path === 'string' ? node.result.path : '')
+      const path = toolFilePath(node, workspace)
 
       if (path === '') continue
 
@@ -54,7 +48,7 @@ export function DetailsPanel() {
     }
 
     return [...seen.entries()]
-  }, [transcript.nodes])
+  }, [transcript.nodes, workspace])
 
   const toolCounts = useMemo(() => {
     const counts = new Map<string, number>()
@@ -72,14 +66,6 @@ export function DetailsPanel() {
 
   return (
     <div className={css.root}>
-      <div className={css.header}>
-        <LayersIcon size={16} />
-        Session
-        <span className={css.spacer} />
-        <button className={css.iconButton} onClick={closeDetails} title="Close" type="button">
-          <XIcon size={16} />
-        </button>
-      </div>
       <div className={css.body}>
         <section className={css.section}>
           <div className={css.sectionTitle}>Details</div>
@@ -130,9 +116,16 @@ export function DetailsPanel() {
             <ul className={css.list}>
               {files.map(([path, verb]) => (
                 <li className={css.fileRow} key={path}>
-                  <span className={css.filePath} title={path}>
+                  <button
+                    className={css.filePath}
+                    onClick={() => {
+                      openFile(path)
+                    }}
+                    title={path}
+                    type="button"
+                  >
                     {shortPath(path, workspace)}
-                  </span>
+                  </button>
                   <span className={css.fileVerb}>{verb}</span>
                 </li>
               ))}

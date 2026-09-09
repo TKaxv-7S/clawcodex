@@ -18,6 +18,7 @@ import type {
   DelegationStatusResult,
   DirectoryListing,
   EffortOptionsResult,
+  FilePage,
   FileSearchResult,
   GatewayEvent,
   GeneralSettingsResult,
@@ -28,6 +29,9 @@ import type {
   SessionResumeResult,
   SlashResult,
   SubagentInterruptResult,
+  WorkspaceFileFailure,
+  WorkspaceFileResult,
+  WorkspaceLevel,
 } from '../gateway/protocol.ts'
 import {
   $backendNano,
@@ -756,6 +760,63 @@ export async function listDirectory(path?: string): Promise<DirectoryListing> {
     'fs.list_directory',
     path === undefined ? {} : { path },
   )
+}
+
+/**
+ * A failure the sidebar can render when the socket itself is the problem.
+ *
+ * The backend answers a refused read inside the result; a rejected *request* —
+ * the socket down, the call timed out — has no code of its own, so it arrives
+ * as the generic one and the reader sees the carrier's message rather than a
+ * blank panel.
+ */
+function unavailable(error: unknown): { error: WorkspaceFileFailure; ok: false } {
+  return {
+    error: {
+      code: 'workspace-file/unavailable',
+      message: error instanceof Error ? error.message : String(error),
+    },
+    ok: false,
+  }
+}
+
+/**
+ * One page of a workspace file's lines, for the sidebar's text preview.
+ *
+ * `offset` is 1-based, and the page length is the backend's own cap: a file has
+ * no bound and a page does, so the reader asks for the next one when it reaches
+ * the end of the loaded text.
+ *
+ * The session is named, never the root: the backend derives the workspace these
+ * reads are confined to, because a boundary the client can move is not one.
+ */
+export async function readWorkspaceFile(
+  path: string,
+  offset: number,
+): Promise<WorkspaceFileResult<FilePage>> {
+  try {
+    return await gateway().request<WorkspaceFileResult<FilePage>>('fs.read_file', {
+      offset,
+      path,
+      session_id: $sessionId.get(),
+    })
+  } catch (error) {
+    return unavailable(error)
+  }
+}
+
+/** One directory level under the session's workspace root, for the file tree. */
+export async function listWorkspaceDir(
+  path?: string,
+): Promise<WorkspaceFileResult<WorkspaceLevel>> {
+  try {
+    return await gateway().request<WorkspaceFileResult<WorkspaceLevel>>('fs.list_dir', {
+      session_id: $sessionId.get(),
+      ...(path === undefined ? {} : { path }),
+    })
+  } catch (error) {
+    return unavailable(error)
+  }
 }
 
 /**

@@ -43,7 +43,8 @@ src/
   conversation/  chat flow, message + tool + reasoning rows, composer, approvals
   trajectory/    the run as a metered ledger: timeline, rows, inspector, totals
   workspace/     directory picker: which folder a session runs in
-  details/       right-hand column: session facts, files touched, tool runs
+  sidebar-right/ right-hand column: tabs for session facts, the workspace tree,
+                 and a paged reader per file the conversation opened
   ui/            primitives (buttons, cards, code/diff/terminal blocks) + markdown
   styles/        design tokens, typography, scrollbars, shiki wiring
 ```
@@ -56,6 +57,44 @@ Two structural rules hold throughout:
 - **One width axis.** `--cc-chat-content-width` sizes the transcript and the
   dock cards; the input card is exactly that plus 32px, at every viewport. The
   relation is declared once, on the conversation root.
+
+## The right column
+
+The right column is a small docking surface rather than one fixed panel. It
+opens on **Session** — the facts about this run, the files it touched, the tools
+it leaned on — and grows a tab for anything else you point it at:
+
+- **Files** lists the workspace one directory level at a time, fetched the first
+  time you open a level and kept afterwards, so collapsing and reopening costs
+  nothing. Clicking a file opens it.
+- **A file** opens as its own tab, read a page at a time (`fs.read_file`, 2000
+  lines per page), with **Load more** at the end of the loaded text until the
+  file ends. A `read` row in the conversation hands its 1-based `offset` along,
+  so the file opens where the agent was looking — walking forward at most five
+  pages, because each page is a round trip whose backend re-reads the lines
+  before it. Wrap, scroll offset and the page you were on live with the tab, not
+  with the component — switching tabs and coming back does not re-read anything.
+  A page is also capped at 2 MB, and a page over that is **refused** rather than
+  truncated: a file whose first line is bigger than the cap (a minified bundle,
+  a one-line JSON dump) therefore cannot be shown here at all.
+
+A tab's identity is its path, so opening the same file twice reveals the tab it
+is already in (and jumps again) rather than stacking duplicates. Full screen
+takes the whole frame; the conversation is one click back.
+
+The change notice — *"The file has changed; this is the older text."* — is
+derived from the transcript, not from a filesystem watcher: a completed
+`write_file` or `edit_file` for that path, after the page landed. So an edit
+made **outside** the agent is not announced, and Reload is there for it. The
+notice never applies itself: reloading under a reader loses their place, and a
+file the agent is writing changes repeatedly.
+
+Both reads are confined to the session's workspace root, symlinks resolved
+(`src/server/desktop_workspace_files.py`). The client names the *session*, never
+the root: the backend derives the boundary, because one the client can move is
+not a boundary. That is honesty rather than a security boundary — the agent in
+that same process can read the disk — but a column that says it is showing the
+workspace must not be reachable through `..`.
 
 ## Trajectory
 
@@ -87,9 +126,14 @@ worse than the empty state.
 
 One semantic worth knowing: `usage.input` is the cache **miss**, not the whole
 prompt — the backend splits a prompt into what it paid full price for and what
-came from cache, because they bill differently. The full prompt is
-`input + cache_read`, which is what the UI shows and what the cache-hit rate is
-computed against.
+came from cache, because they bill differently. `input + cache_read` is the full
+prompt, which is what the Trajectory shows.
+
+The **cache-hit rate** divides by a third bucket as well: `cache_write` (tokens
+written into the cache) was processed in full and charged for, so it is a miss.
+The rate is `cache_read / (input + cache_read + cache_write)` — the same sum the
+usage pill's dialog itemises, so the percentage and the counts under it describe
+one arithmetic.
 
 ## Development
 
@@ -154,7 +198,15 @@ which is MIT licensed:
 Adapted here: the design-token architecture (raw palette → semantic aliases →
 surface-specific roles, with only the aliases moving between themes), the
 three-column concession solver, the single-scrollport conversation column with
-its sticky composer seat and shared width axis, and the tool-card family
-(terminal / diff / read / generic). The DeepSeek branding, the cordis plugin
-runtime, and the client module system are not used; the protocol layer is
-ClawCodex's own gateway, which is a different contract entirely.
+its sticky composer seat and shared width axis, the tool-card family
+(terminal / diff / read / generic), the tabbed right column with its lazy
+workspace tree and paged text reader, and the two-pill session stats with their
+click-open dialogs.
+
+Not adapted: the DeepSeek branding, the cordis plugin runtime, the client module
+system, and the right column's docking engine — splits, floating panes, drag and
+drop and an undo history are a plugin runtime's worth of machinery for a column
+this app never splits, so the tabs are here and the engine is not. The protocol
+layer is ClawCodex's own gateway, which is a different contract entirely: the
+reference client reads files through a host resource registry, this one through
+two workspace-confined gateway methods.

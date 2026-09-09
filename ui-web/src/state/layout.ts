@@ -5,6 +5,13 @@
  * `layout/columns.ts` turns them into the widths a frame actually paints, and
  * an auto-collapse never writes back here — which is what lets a re-widened
  * window restore exactly what the user last dragged.
+ *
+ * `details` is the RIGHT COLUMN, which now holds the tabbed sidebar
+ * (`sidebar-right/`) rather than the single details panel it was named for.
+ * The name stays because it is a key in the stored payload: renaming it would
+ * silently discard the width every existing reader has already dragged. Close
+ * the column through `sidebar-right/store.ts`'s `closeSidebar`, not
+ * `closeDetails` — full screen has to come down with it.
  */
 
 import { atom } from 'nanostores'
