@@ -66,13 +66,23 @@ it leaned on — and grows a tab for anything else you point it at:
 
 - **Files** lists the workspace one directory level at a time, fetched the first
   time you open a level and kept afterwards, so collapsing and reopening costs
-  nothing. Clicking a file opens it.
-- **A file** opens as its own tab, read a page at a time (`fs.read_file`, 2000
+  nothing. Clicking a file opens it. A level is ordered *server-side* before its
+  2000-entry cap is applied — and before anything is stat'd, so the cap bounds
+  the work and not just the answer — which makes what `truncated` hides the
+  alphabetical tail rather than an arbitrary sample of the directory. That
+  server-side order is the column's own collation minus one thing it cannot
+  afford: case-insensitive, digits compared as numbers (so a `chunk1…chunk5000`
+  directory keeps `chunk1`, not `chunk1, chunk10, chunk100`), but **not**
+  directories-first — that needs every child's type, which is the stat-per-child
+  the cut exists to avoid. So over the cap the cut can still fall a few names
+  from where the displayed list ends.
+- **A file** opens as its own tab, read a page at a time (`fs.read_file`, 5000
   lines per page), with **Load more** at the end of the loaded text until the
   file ends. A `read` row in the conversation hands its 1-based `offset` along,
   so the file opens where the agent was looking — walking forward at most five
   pages, because each page is a round trip whose backend re-reads the lines
-  before it. Wrap, scroll offset and the page you were on live with the tab, not
+  before it. Five pages of 5000 is how far a jump reaches; past that it lands on
+  the last loaded line, beside **Load more**. Wrap, scroll offset and the page you were on live with the tab, not
   with the component — switching tabs and coming back does not re-read anything.
   A page is also capped at 2 MB, and a page over that is **refused** rather than
   truncated: a file whose first line is bigger than the cap (a minified bundle,
@@ -88,6 +98,14 @@ derived from the transcript, not from a filesystem watcher: a completed
 made **outside** the agent is not announced, and Reload is there for it. The
 notice never applies itself: reloading under a reader loses their place, and a
 file the agent is writing changes repeatedly.
+
+For the same reason a file **deleted** under the reader says nothing: there is
+no `stat` channel to fail on, so the loaded pages simply stay on screen until
+Reload reports it. A failure while *reading* is announced, at the end of the
+loaded text — but a file already read to `eof` has no next page to fail. Nor
+does the agent merely *reading* a file that something else changed raise the
+notice, as it does upstream: there, the read observes a new version through the
+resource; here it observes nothing the client can see.
 
 Both reads are confined to the session's workspace root, symlinks resolved
 (`src/server/desktop_workspace_files.py`). The client names the *session*, never
@@ -123,6 +141,13 @@ A metric that could not be measured says so ("First token unavailable") rather
 than showing a zero. That is why a **resumed** session starts with an empty
 ledger: a replayed transcript carries no timings, and inventing them would be
 worse than the empty state.
+
+The same rule costs a resumed session its **token pill**. A stored transcript
+carries no per-request usage — `session.usage` reports the context window's
+occupancy, not what the run was billed — so the counts cannot be rebuilt, and
+the pill is dropped rather than shown as zeros, which would read as "this run
+was free". The gauge pill stays: turns, steps and durations *are* rebuilt from
+the stored messages.
 
 One semantic worth knowing: `usage.input` is the cache **miss**, not the whole
 prompt — the backend splits a prompt into what it paid full price for and what

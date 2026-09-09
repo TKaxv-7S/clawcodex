@@ -40,7 +40,16 @@ export interface TextTabState {
   path: string
   /** Keyed by the 1-based line the page starts at. */
   pages: Record<number, TextPage>
-  /** When the most recent page landed — the clock the change notice reads. */
+  /**
+   * When the *first* page of the loaded version landed — the clock the change
+   * notice reads.
+   *
+   * Not the newest page: paging forward would then refresh it and clear a
+   * notice through a gesture that is not Reload, leaving the reader with a
+   * stale top and nothing saying so. A later page comes from the same version
+   * by construction — a page from a newer one restarts the walk — so the first
+   * page's clock is the right one for the whole body.
+   */
   readAt: number
   scrollTop: number
   /** The file version every loaded page came from. */
@@ -107,7 +116,7 @@ export function applyPage(
       loading: false,
       path: page.absolute_path,
       pages: { ...base, [offset]: { lines: page.lines, text: page.text } },
-      readAt: Date.now(),
+      readAt: offset === 1 ? Date.now() : state.readAt,
       version: page.version,
     },
   }

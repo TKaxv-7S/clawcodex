@@ -14,6 +14,13 @@ disk, and the socket is loopback and token-gated — it is honesty: the sidebar
 says it is showing the workspace, so it must not be reachable through `..` or a
 symlink pointing out of the tree.
 
+A deliberate divergence from the reference service, which refuses a symlink
+outright *wherever it points, including back inside the workspace*: a link into
+a project is an ordinary way to reach a file, and refusing one that resolves
+inside the tree would surprise the reader for no gain the containment check does
+not already give. A link that resolves outside is refused, and the tree types it
+`other` rather than offering a click that would fail.
+
 **Failure is part of the answer, not an exception.** The gateway's error
 envelope carries a message and nothing else (`desktop_gateway.py::_dispatch`),
 and a reader needs the *code* to say why in terms of the file — "that file is
@@ -28,18 +35,27 @@ Reads are paged by line, never whole: a file has no bound, and a page does.
 from __future__ import annotations
 
 import os
+import re
 import stat as stat_module
 from pathlib import Path
 from typing import Any
 
-# One page of lines. The reader asks for the next page when it reaches the end
-# of the loaded text, so this bounds a single response, not the file.
-MAX_LINES = 2000
+# One page of lines — the reference service's own default. The reader asks for
+# the next page when it reaches the end of the loaded text, so this bounds a
+# single response, not the file; the byte cap below is what actually binds on a
+# page of long lines.
+#
+# It also multiplies with the client's jump-to-line bound (`WALK_PAGE_LIMIT`):
+# five pages of 2000 put a `read` row's line 12,000 out of reach, where five of
+# 5000 reach 25,000 for the same number of round trips.
+MAX_LINES = 5000
 # ...and one page's bytes, independently: 2000 lines of minified JavaScript is
 # not a page anybody wants delivered over a socket that also carries the turn.
 MAX_BYTES = 2 * 1024 * 1024
-# Children returned for one directory level before the tail is cut.
-MAX_ENTRIES = 500
+# Children returned for one directory level before the tail is cut. The
+# reference service's own default; the tail it cuts is the alphabetical tail,
+# because the level is ordered before it is cut (see `list_dir`).
+MAX_ENTRIES = 2000
 
 
 def _failure(code: str, message: str, **details: Any) -> dict[str, Any]:
@@ -47,6 +63,37 @@ def _failure(code: str, message: str, **details: Any) -> dict[str, Any]:
     if details:
         error["details"] = details
     return {"ok": False, "error": error}
+
+
+def _order(name: str) -> tuple[tuple[tuple[int, Any], ...], str]:
+    """Sort key for one directory entry: case-insensitive, digits as numbers.
+
+    The client collates the level it receives with
+    ``Intl.Collator(numeric: true, sensitivity: 'base')``, and over the entry
+    cap the *server's* order decides which names survive — so a cut made in
+    codepoint order keeps ``file1, file10, file100`` and drops ``file2``
+    through ``file9``, which is the arbitrary-looking hole this ordering exists
+    to prevent. Non-padded sequential names are exactly what fills a directory
+    past the cap.
+
+    Costs no syscall: a name is all it reads. The full name is the tie-break, so
+    two entries differing only in case still have a stable order.
+
+    ``isdecimal`` rather than ``isdigit``, and the difference is the whole
+    function's totality. ``\d`` splits on Unicode category ``Nd``, which is
+    exactly what ``isdecimal`` reports and exactly what ``int`` accepts;
+    ``isdigit`` is *wider* — it is true for ``²`` and ``①``, which ``\d`` never
+    split out, so they arrive as ordinary text that answers yes and then makes
+    ``int`` raise. One file named ``²`` used to take its whole directory out
+    that way, with the ``ValueError`` escaping this module entirely. With the
+    three sets lined up, ``int`` here can never raise.
+    """
+    parts = tuple(
+        (1, int(part)) if part.isdecimal() else (0, part)
+        for part in re.split(r"(\d+)", name.lower())
+    )
+
+    return parts, name
 
 
 def _inside(root: Path, path: Path) -> bool:
@@ -189,9 +236,18 @@ def read_file(
     except UnicodeDecodeError:
         return _failure("not-text", "That is not a text file, so it cannot be shown here.")
 
+    # A NUL byte is valid UTF-8, so decoding alone lets a binary through: a
+    # UTF-16 file of ASCII decodes cleanly and would render as text interleaved
+    # with invisible NULs. The reference service scans the page for one too.
+    if "\x00" in decoded:
+        return _failure("not-text", "That is not a text file, so it cannot be shown here.")
+
     # CRLF is a line ending, not a character in the line: the client splits on
     # "\n" and would otherwise render a stray carriage return at every line end
-    # of a file written on Windows.
+    # of a file written on Windows. This costs byte fidelity knowingly — `text`
+    # is no longer a verbatim slice of the file — and it does nothing for a lone
+    # "\r", which `readline` does not split on either, so a classic-Mac file
+    # still arrives as one very long line.
     text = decoded.replace("\r\n", "\n")
     # The page's terminator is not part of its last line either: the client
     # renders one block per line and adds the break itself, and keeping the
@@ -219,6 +275,20 @@ def list_dir(root: str, path: str | None = None) -> dict[str, Any]:
     it is, not a filtered view; the client decides what to draw. Entries that
     are neither a file nor a directory are typed ``other`` and shown as
     unopenable rather than hidden, so a directory is described whole.
+
+    **The level is ordered before it is cut.** The client sorts what arrives,
+    but sorting a cut made in ``scandir`` order only makes an arbitrary sample
+    look deliberate: over the cap you would get *some* N of the children, so
+    ``a.txt`` could be missing while ``z.txt`` was present, and Reload — which
+    walks the same directory in the same order — would keep hiding it. Cutting
+    the alphabetical tail is what ``truncated`` actually claims.
+
+    The order is ``_order``'s: case-insensitive, digits compared as numbers,
+    which is the client's collation minus one thing it cannot afford. The client
+    also groups **directories first**, and that does need every child's type —
+    the stat-per-child this deliberately avoids — so over the cap the cut can
+    still fall a few names from where the displayed list ends. (Accent folding
+    is the other difference, and is not chased.) Stated in ``ui-web/README.md``.
     """
     resolved = _resolve(root, path)
     if isinstance(resolved, dict):
@@ -232,10 +302,16 @@ def list_dir(root: str, path: str | None = None) -> dict[str, Any]:
     # the error that actually happened.
     try:
         with os.scandir(target) as scan:
-            for item in scan:
-                if len(entries) >= MAX_ENTRIES:
-                    truncated = True
-                    break
+            # Ordered on the names alone, which `readdir` already handed over,
+            # and cut BEFORE anything is stat'd: every branch below costs a
+            # syscall per child, so statting the whole level to return 2000 of
+            # it would make a directory of 200k children pay 200k syscalls for
+            # a 2000-row answer. The cap has to bound the work, not just the
+            # payload.
+            listing = sorted(scan, key=lambda item: _order(item.name))
+            truncated = len(listing) > MAX_ENTRIES
+
+            for item in listing[:MAX_ENTRIES]:
                 try:
                     # A link whose target is outside the tree reads as `other`:
                     # the reads below would refuse it, and a row that always

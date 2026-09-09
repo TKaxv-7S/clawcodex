@@ -55,7 +55,7 @@ function Level({ path, tree }: { path: string; tree: FilesTreeState }) {
 
   if (level.kind === 'failed') {
     return (
-      <li className={css.note} data-files-row="failed">
+      <li className={css.note} data-files-code={level.failure.code} data-files-row="failed">
         {directoryFailureLine(level.failure)}
       </li>
     )

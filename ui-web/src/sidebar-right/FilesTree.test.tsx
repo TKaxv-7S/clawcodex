@@ -132,11 +132,13 @@ describe('FilesTree', () => {
       ok: false,
     })
 
-    render(<FilesTree />)
+    const { container } = render(<FilesTree />)
 
     expect(
       await screen.findByText('That directory is gone. It may have been moved or deleted.'),
     ).toBeTruthy()
+    // The code is on the row too: "failed" alone cannot say failed with *what*.
+    expect(container.querySelector('[data-files-code="workspace-file/not-found"]')).not.toBeNull()
   })
 
   it('reloads the open levels on the header control', async () => {

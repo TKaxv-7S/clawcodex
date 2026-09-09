@@ -24,12 +24,18 @@ export function changedSince(
 ): boolean {
   if (path === '' || readAt === 0) return false
 
-  return nodes.some(node => {
-    if (node.kind !== 'tool' || !WRITE_TOOLS.has(node.name) || node.state !== 'done') return false
+  // Backwards: the write worth finding is almost always the newest one, and
+  // this runs on every render of an open preview.
+  for (let index = nodes.length - 1; index >= 0; index -= 1) {
+    const node = nodes[index]
+
+    if (node === undefined) continue
+    if (node.kind !== 'tool' || !WRITE_TOOLS.has(node.name) || node.state !== 'done') continue
     // A rehydrated node carries no end time; treating that as "just now" would
     // announce a change on every resumed session.
-    if (node.endedAt === undefined || node.endedAt <= readAt) return false
+    if (node.endedAt === undefined || node.endedAt <= readAt) continue
+    if (toolFilePath(node, workspace) === path) return true
+  }
 
-    return toolFilePath(node, workspace) === path
-  })
+  return false
 }

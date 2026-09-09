@@ -6,7 +6,7 @@ import type { FilePage } from '../gateway/protocol.ts'
 import { setGatewayClient } from '../state/actions.ts'
 import { $sessionId, $transcript, $workspace } from '../state/store.ts'
 import { emptyTranscript, type ToolNode } from '../state/transcript.ts'
-import { $textTabs, resetTextTabs } from './text-store.ts'
+import { $textTabs, reloadPages, resetTextTabs, setScroll } from './text-store.ts'
 import { openFile, resetSidebar } from './store.ts'
 import { scrollToLine, TextPreview } from './TextPreview.tsx'
 
@@ -220,6 +220,66 @@ describe('TextPreview', () => {
     await screen.findByText('three')
 
     expect(screen.queryByText('The file has changed; this is the older text.')).toBeNull()
+  })
+
+  it('keeps the reader\'s place across a reload', async () => {
+    // A reload empties the pages before its first page lands. In a browser the
+    // body then collapses, scrollTop is clamped to 0 and a scroll event fires —
+    // which used to write that 0 over the offset the restore was about to read,
+    // returning the reader to the top of every file they reloaded. jsdom does
+    // no layout, so the clamp is supplied here; the guard is what is under test.
+    const { container } = render(<TextPreview path="/repo/a.ts" tabId={TAB} />)
+
+    await screen.findByText('three')
+    setScroll(TAB, 420)
+
+    let land = (): void => {}
+
+    request.mockImplementationOnce(
+      async () =>
+        new Promise(resolve => {
+          land = () => {
+            resolve(page({ text: 'after the edit' }))
+          }
+        }),
+    )
+
+    const reloading = reloadPages(TAB, '/repo/a.ts')
+    const body = container.querySelector('[data-preview-body]') as HTMLElement
+
+    await waitFor(() => {
+      expect(body.querySelector('[data-preview-line]')).toBeNull()
+    })
+
+    body.scrollTop = 0
+    fireEvent.scroll(body)
+
+    expect($textTabs.get()[TAB]?.scrollTop).toBe(420)
+
+    land()
+    await reloading
+    await waitFor(() => {
+      expect(screen.getByText('after the edit')).toBeTruthy()
+    })
+    expect(body.scrollTop).toBe(420)
+  })
+
+  it('lands on the last loaded line when the walk gave up', async () => {
+    // Silence would make the click look broken; the reader arrives at the end
+    // of what is loaded, beside Load more.
+    request.mockImplementation(async (_method: string, params: { offset: number }) =>
+      page({ eof: false, lines: 3, offset: params.offset, text: 'a\nb\nc' }),
+    )
+    openFile('/repo/a.ts', 100_000)
+
+    const { container } = render(<TextPreview path="/repo/a.ts" tabId={TAB} />)
+
+    await screen.findByText('Load more')
+    await waitFor(() => {
+      expect($textTabs.get()[TAB]?.answered).toBe(1)
+    })
+    // Answered against a real line rather than abandoned.
+    expect(container.querySelectorAll('[data-preview-line]').length).toBeGreaterThan(0)
   })
 
   it('marks the line a navigation asked for, once', async () => {

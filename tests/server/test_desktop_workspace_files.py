@@ -11,6 +11,7 @@ import os
 
 import pytest
 
+from src.server import desktop_workspace_files as workspace_files
 from src.server.desktop_workspace_files import (
     MAX_BYTES,
     MAX_ENTRIES,
@@ -139,6 +140,17 @@ def test_a_directory_has_no_text_to_show(workspace):
     result = read_file(str(workspace), "src")
 
     assert result["error"]["code"] == "workspace-file/not-regular-file"
+
+
+def test_a_binary_that_happens_to_decode_is_still_refused(workspace):
+    # A NUL byte is valid UTF-8, so decoding alone lets this through: UTF-16LE
+    # ASCII is exactly the case, and it would render as text interleaved with
+    # invisible NULs rather than as "not a text file".
+    (workspace / "utf16.txt").write_bytes("hello".encode("utf-16-le"))
+
+    result = read_file(str(workspace), "utf16.txt")
+
+    assert result["error"]["code"] == "workspace-file/not-text"
 
 
 def test_a_binary_file_is_refused_as_not_text(workspace):
@@ -302,14 +314,131 @@ def test_a_level_of_exactly_the_cap_is_not_reported_as_cut(workspace):
     assert listing["truncated"] is False
 
 
-def test_a_long_level_is_cut_and_says_so(workspace):
-    for index in range(MAX_ENTRIES + 5):
-        (workspace / f"file-{index:04d}.txt").write_text("x", encoding="utf-8")
+def test_a_long_level_is_cut_and_says_so(workspace, monkeypatch):
+    monkeypatch.setattr(workspace_files, "MAX_ENTRIES", 5)
+    for index in range(8):
+        (workspace / f"file-{index}.txt").write_text("x", encoding="utf-8")
 
     listing = list_dir(str(workspace))
 
-    assert len(listing["entries"]) == MAX_ENTRIES
+    assert len(listing["entries"]) == 5
     assert listing["truncated"] is True
+
+
+def test_a_cut_level_keeps_the_alphabetical_head(workspace, monkeypatch):
+    """`truncated` claims a tail was cut, so a tail has to be what was cut.
+
+    Cutting in `scandir` order means *some* N children survive: `a.txt` can be
+    missing while `z.txt` is present, and Reload walks the same directory in the
+    same order, so the missing one stays missing. Written in reverse so a naive
+    cut would keep the alphabetical tail instead.
+    """
+    monkeypatch.setattr(workspace_files, "MAX_ENTRIES", 3)
+    for index in reversed(range(6)):
+        (workspace / f"file-{index}.txt").write_text("x", encoding="utf-8")
+
+    names = [entry["name"] for entry in list_dir(str(workspace))["entries"]]
+
+    assert names == ["file-0.txt", "file-1.txt", "file-2.txt"]
+
+
+def test_a_cut_level_counts_rather_than_spells_its_numbers(workspace, monkeypatch):
+    """Non-padded sequential names are what fills a directory past the cap.
+
+    In codepoint order the survivors are `file1, file10, file11, file12, file2`
+    — high numbers present, low ones missing, which is the arbitrary-looking
+    hole the ordering exists to prevent.
+    """
+    monkeypatch.setattr(workspace_files, "MAX_ENTRIES", 5)
+    for index in range(1, 13):
+        (workspace / f"file{index}.txt").write_text("x", encoding="utf-8")
+
+    names = [entry["name"] for entry in list_dir(str(workspace))["entries"]]
+
+    assert names == [f"file{index}.txt" for index in range(1, 6)]
+
+
+def test_a_name_carrying_a_digit_python_cannot_parse_does_not_take_the_level_out(workspace):
+    """`isdigit()` is wider than `int()` accepts, and `\\d` is narrower than both.
+
+    A superscript or a circled digit is `isdigit()` but not `isdecimal()`, and
+    `\\d` never splits it out — so it reached the numeric branch as ordinary text
+    and `int()` raised. The `ValueError` escaped the module, failed the RPC, and
+    left the whole directory unlistable with Reload hitting the same path.
+    """
+    (workspace / "²").write_text("x", encoding="utf-8")
+    (workspace / "①").write_text("x", encoding="utf-8")
+    (workspace / "normal.txt").write_text("x", encoding="utf-8")
+
+    listing = list_dir(str(workspace))
+
+    assert listing["ok"] is True
+    assert sorted(entry["name"] for entry in listing["entries"]) == sorted(
+        ["²", "①", "normal.txt"]
+    )
+
+
+def test_a_non_ascii_decimal_still_sorts_as_a_number(workspace):
+    """The narrowing must not cost the digits that do work: Arabic-Indic is
+    `Nd`, so `\\d` splits it, `isdecimal()` is true, and `int()` reads it."""
+    for numeral in ("١", "٢", "١٠"):
+        (workspace / f"file{numeral}.txt").write_text("x", encoding="utf-8")
+
+    names = [entry["name"] for entry in list_dir(str(workspace))["entries"]]
+
+    assert names == ["file١.txt", "file٢.txt", "file١٠.txt"]
+
+
+def test_the_cap_bounds_the_work_and_not_only_the_answer(workspace, monkeypatch):
+    """Statting the whole level to return a slice of it is the same cost bug the
+    cap exists to avoid: `readdir` hands over names for free, but every type and
+    size below is a syscall per child.
+    """
+    statted: list[str] = []
+
+    class _Entry:
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self.path = str(workspace / name)
+
+        def is_symlink(self) -> bool:
+            statted.append(self.name)
+            return False
+
+        def is_dir(self, follow_symlinks: bool = True) -> bool:
+            statted.append(self.name)
+            return False
+
+        def is_file(self, follow_symlinks: bool = True) -> bool:
+            statted.append(self.name)
+            return True
+
+        def stat(self, follow_symlinks: bool = True):
+            statted.append(self.name)
+            return os.stat_result((0o100644, 0, 0, 1, 0, 0, 7, 0, 0, 0))
+
+    class _Scan:
+        def __enter__(self):
+            return iter([_Entry(f"file-{index}.txt") for index in reversed(range(50))])
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+    monkeypatch.setattr(workspace_files, "MAX_ENTRIES", 5)
+    monkeypatch.setattr(workspace_files.os, "scandir", lambda _target: _Scan())
+
+    listing = list_dir(str(workspace))
+
+    assert [entry["name"] for entry in listing["entries"]] == [
+        "file-0.txt",
+        "file-1.txt",
+        "file-2.txt",
+        "file-3.txt",
+        "file-4.txt",
+    ]
+    assert listing["truncated"] is True
+    # Only the five that were returned were ever asked about.
+    assert set(statted) == {entry["name"] for entry in listing["entries"]}
 
 
 def test_listing_a_file_is_reported_as_not_a_directory(workspace):
