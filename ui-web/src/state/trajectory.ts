@@ -606,6 +606,11 @@ export function hydrateStoredTrajectory(
 
 export interface TrajectoryStats {
   cacheHitRatio: number | null
+  /** Prompt tokens served from cache — one of the three billed input buckets. */
+  cacheReadTokens: number
+  /** Prompt tokens written INTO the cache; disjoint from the other two. */
+  cacheWriteTokens: number
+  /** The whole prompt: what was paid for in full plus what came from cache. */
   inputTokens: number
   llmMs: number
   outputTokens: number
@@ -615,6 +620,8 @@ export interface TrajectoryStats {
   /** Mean TTFT over the steps that recorded one. */
   ttftMs: number | null
   turns: number
+  /** The prompt tokens billed at full price — the cache MISS. */
+  uncachedInputTokens: number
 }
 
 /**
@@ -631,6 +638,8 @@ export function trajectoryStats(state: TrajectoryState): TrajectoryStats {
   let inputTokens = 0
   let outputTokens = 0
   let cacheRead = 0
+  let cacheWrite = 0
+  let uncachedInput = 0
   let generationMs = 0
   let generationTokens = 0
   const ttfts: number[] = []
@@ -663,6 +672,8 @@ export function trajectoryStats(state: TrajectoryState): TrajectoryStats {
     inputTokens += promptTokens(usage)
     outputTokens += usage.output
     cacheRead += usage.cache_read ?? 0
+    cacheWrite += usage.cache_write ?? 0
+    uncachedInput += usage.input
 
     if (metrics.firstTokenAt !== null && metrics.completedAt !== null) {
       generationMs += Math.max(0, metrics.completedAt - metrics.firstTokenAt)
@@ -674,6 +685,8 @@ export function trajectoryStats(state: TrajectoryState): TrajectoryStats {
 
   return {
     cacheHitRatio: inputTokens > 0 ? cacheRead / inputTokens : null,
+    cacheReadTokens: cacheRead,
+    cacheWriteTokens: cacheWrite,
     inputTokens,
     llmMs,
     outputTokens,
@@ -682,6 +695,7 @@ export function trajectoryStats(state: TrajectoryState): TrajectoryStats {
     toolMs,
     ttftMs: ttfts.length === 0 ? null : ttfts.reduce((a, b) => a + b, 0) / ttfts.length,
     turns: state.turn,
+    uncachedInputTokens: uncachedInput,
   }
 }
 

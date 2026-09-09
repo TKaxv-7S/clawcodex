@@ -38,10 +38,9 @@ import {
 import { AgentsPanel } from '../agents/AgentsPanel.tsx'
 import { currentTodos } from '../state/todo-progress.ts'
 import { trajectoryStats } from '../state/trajectory.ts'
-import { RunStatsBar } from '../trajectory/RunStatsBar.tsx'
 import { WorkspaceChip } from '../workspace/WorkspaceChip.tsx'
 import { TrajectoryView } from '../trajectory/TrajectoryView.tsx'
-import { $detailsWidth, closeDetails, openDetails } from '../state/layout.ts'
+import { $detailsWidth, openDetails } from '../state/layout.ts'
 import { ArrowDownIcon, LayersIcon, MessageIcon, PlusIcon } from '../ui/icons.tsx'
 import { ApprovalPanel } from './ApprovalPanel.tsx'
 import { ChatView } from './ChatView.tsx'
@@ -49,7 +48,9 @@ import { HeroShell } from './HeroShell.tsx'
 import { InputBar } from './InputBar.tsx'
 import { PlanReviewPanel } from './PlanReviewPanel.tsx'
 import { QuestionComposer } from './QuestionComposer.tsx'
+import { closeSidebar } from '../sidebar-right/store.ts'
 import { QueueDock } from './QueueDock.tsx'
+import { StatsPills } from './StatsPills.tsx'
 import { TodoPanel } from './TodoPanel.tsx'
 import css from './ConversationRoot.module.css'
 
@@ -338,9 +339,9 @@ export function ConversationRoot() {
               className={css.iconButton}
               onClick={() => {
                 if (detailsWidth === 0) openDetails()
-                else closeDetails()
+                else closeSidebar()
               }}
-              title="Session details (⌘I)"
+              title="Sidebar (⌘I)"
               type="button"
             >
               <LayersIcon size={16} />
@@ -388,7 +389,7 @@ export function ConversationRoot() {
           </div>
           <div className={css.footer}>
             {seatPanel}
-            <RunStatsBar
+            <StatsPills
               model={transcript.info.model}
               nano={nano === true}
               provider={transcript.info.provider}
@@ -442,7 +443,7 @@ export function ConversationRoot() {
               <TodoPanel todos={todos} />
               <QueueDock items={queue} onRemove={dequeue} />
               {seatPanel}
-              <RunStatsBar
+              <StatsPills
                 model={transcript.info.model}
                 nano={nano === true}
                 provider={transcript.info.provider}
