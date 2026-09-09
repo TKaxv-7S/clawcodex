@@ -38,8 +38,10 @@ MAX_LINES = 2000
 # ...and one page's bytes, independently: 2000 lines of minified JavaScript is
 # not a page anybody wants delivered over a socket that also carries the turn.
 MAX_BYTES = 2 * 1024 * 1024
-# Children returned for one directory level before the tail is cut.
-MAX_ENTRIES = 500
+# Children returned for one directory level before the tail is cut. The
+# reference service's own default; the tail it cuts is the alphabetical tail,
+# because the level is ordered before it is cut (see `list_dir`).
+MAX_ENTRIES = 2000
 
 
 def _failure(code: str, message: str, **details: Any) -> dict[str, Any]:
@@ -192,6 +194,12 @@ def read_file(
     # CRLF is a line ending, not a character in the line: the client splits on
     # "\n" and would otherwise render a stray carriage return at every line end
     # of a file written on Windows.
+    # A NUL byte is valid UTF-8, so `decode` alone lets a binary through: a
+    # UTF-16 file of ASCII decodes cleanly and would render as text interleaved
+    # with invisible NULs. The reference service scans the page for one too.
+    if "\x00" in decoded:
+        return _failure("not-text", "That is not a text file, so it cannot be shown here.")
+
     text = decoded.replace("\r\n", "\n")
     # The page's terminator is not part of its last line either: the client
     # renders one block per line and adds the break itself, and keeping the
@@ -219,6 +227,13 @@ def list_dir(root: str, path: str | None = None) -> dict[str, Any]:
     it is, not a filtered view; the client decides what to draw. Entries that
     are neither a file nor a directory are typed ``other`` and shown as
     unopenable rather than hidden, so a directory is described whole.
+
+    **The level is ordered before it is cut.** The client sorts what arrives,
+    but sorting a cut made in ``scandir`` order only makes an arbitrary sample
+    look deliberate: over the cap you would get *some* 500 of the children, so
+    ``a.txt`` could be missing while ``z.txt`` was present, and Reload — which
+    walks the same directory in the same order — would keep hiding it. Cutting
+    the alphabetical tail is what ``truncated`` actually claims.
     """
     resolved = _resolve(root, path)
     if isinstance(resolved, dict):
@@ -226,16 +241,13 @@ def list_dir(root: str, path: str | None = None) -> dict[str, Any]:
     resolved_root, target = resolved
 
     entries: list[dict[str, Any]] = []
-    truncated = False
     # No `exists()` / `is_dir()` probe first: both swallow the OSError, so an
     # unreadable directory would be reported as a missing one. `scandir` raises
     # the error that actually happened.
     try:
         with os.scandir(target) as scan:
-            for item in scan:
-                if len(entries) >= MAX_ENTRIES:
-                    truncated = True
-                    break
+            listing = sorted(scan, key=lambda item: item.name)
+            for item in listing:
                 try:
                     # A link whose target is outside the tree reads as `other`:
                     # the reads below would refuse it, and a row that always
@@ -270,10 +282,12 @@ def list_dir(root: str, path: str | None = None) -> dict[str, Any]:
     except OSError as exc:
         return _failure("unavailable", f"cannot read {target}: {exc}")
 
+    truncated = len(entries) > MAX_ENTRIES
+
     return {
         "ok": True,
         "absolute_path": str(target),
-        "entries": entries,
+        "entries": entries[:MAX_ENTRIES],
         "truncated": truncated,
     }
 

@@ -66,7 +66,9 @@ it leaned on — and grows a tab for anything else you point it at:
 
 - **Files** lists the workspace one directory level at a time, fetched the first
   time you open a level and kept afterwards, so collapsing and reopening costs
-  nothing. Clicking a file opens it.
+  nothing. Clicking a file opens it. A level is ordered *server-side* before its
+  2000-entry cap is applied, so what `truncated` hides is the alphabetical tail
+  rather than an arbitrary sample of the directory.
 - **A file** opens as its own tab, read a page at a time (`fs.read_file`, 2000
   lines per page), with **Load more** at the end of the loaded text until the
   file ends. A `read` row in the conversation hands its 1-based `offset` along,

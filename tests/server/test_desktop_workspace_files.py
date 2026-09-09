@@ -141,6 +141,17 @@ def test_a_directory_has_no_text_to_show(workspace):
     assert result["error"]["code"] == "workspace-file/not-regular-file"
 
 
+def test_a_binary_that_happens_to_decode_is_still_refused(workspace):
+    # A NUL byte is valid UTF-8, so decoding alone lets this through: UTF-16LE
+    # ASCII is exactly the case, and it would render as text interleaved with
+    # invisible NULs rather than as "not a text file".
+    (workspace / "utf16.txt").write_bytes("hello".encode("utf-16-le"))
+
+    result = read_file(str(workspace), "utf16.txt")
+
+    assert result["error"]["code"] == "workspace-file/not-text"
+
+
 def test_a_binary_file_is_refused_as_not_text(workspace):
     (workspace / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\n\xff\xfe\x00binary")
 
@@ -304,12 +315,30 @@ def test_a_level_of_exactly_the_cap_is_not_reported_as_cut(workspace):
 
 def test_a_long_level_is_cut_and_says_so(workspace):
     for index in range(MAX_ENTRIES + 5):
-        (workspace / f"file-{index:04d}.txt").write_text("x", encoding="utf-8")
+        (workspace / f"file-{index:05d}.txt").write_text("x", encoding="utf-8")
 
     listing = list_dir(str(workspace))
 
     assert len(listing["entries"]) == MAX_ENTRIES
     assert listing["truncated"] is True
+
+
+def test_a_cut_level_keeps_the_alphabetical_head(workspace):
+    """`truncated` claims a tail was cut, so a tail has to be what was cut.
+
+    Cutting in `scandir` order means *some* N children survive: `a.txt` can be
+    missing while `z.txt` is present, and Reload walks the same directory in the
+    same order, so the missing one stays missing. Written in reverse so a naive
+    cut would keep the alphabetical tail instead.
+    """
+    for index in reversed(range(MAX_ENTRIES + 5)):
+        (workspace / f"file-{index:05d}.txt").write_text("x", encoding="utf-8")
+
+    names = [entry["name"] for entry in list_dir(str(workspace))["entries"]]
+
+    assert names == sorted(names)
+    assert names[0] == "file-00000.txt"
+    assert "file-02004.txt" not in names
 
 
 def test_listing_a_file_is_reported_as_not_a_directory(workspace):

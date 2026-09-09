@@ -112,7 +112,10 @@ export function TextPreview({ path, tabId }: TextPreviewProps) {
       return
     }
 
-    scrollToLine(element, line)
+    // A line past the loaded text — the walk gave up, or the file ended before
+    // it — lands on the last line there is. Doing nothing at all would make the
+    // click look broken.
+    scrollToLine(element, Math.min(line, loadedThrough))
     markAnswered(tabId, revision)
     // Recorded here as well as by the scroll event, so the bucket holds the
     // landing before anything else reads it.
@@ -130,6 +133,13 @@ export function TextPreview({ path, tabId }: TextPreviewProps) {
     tabId,
     started,
   ])
+
+  // $transcript changes on every streamed token, and this walks every node in
+  // it; without the memo an open preview pays that per token.
+  const changedNow = useMemo(
+    () => changedSince(transcript.nodes, path, state?.readAt ?? 0, workspace),
+    [transcript.nodes, path, state?.readAt, workspace],
+  )
 
   const rows = useMemo(
     () =>
@@ -168,7 +178,7 @@ export function TextPreview({ path, tabId }: TextPreviewProps) {
   const reload = () => {
     void reloadPages(tabId, path)
   }
-  const changed = changedSince(transcript.nodes, path, state.readAt, workspace)
+  const changed = changedNow
 
   return (
     <div className={css.root} data-preview-state="text">
@@ -210,7 +220,11 @@ export function TextPreview({ path, tabId }: TextPreviewProps) {
         className={[css.body, state.wrap ? css.wrap : ''].filter(Boolean).join(' ')}
         data-preview-body
         onScroll={event => {
-          setScroll(tabId, event.currentTarget.scrollTop)
+          // Only while there is something to scroll. A reload empties the
+          // pages before its first page lands, and an empty body collapses to
+          // scrollTop 0 and fires this — which would write the reader's place
+          // away a frame before it is restored.
+          if (hasPages) setScroll(tabId, event.currentTarget.scrollTop)
         }}
         ref={body}
       >
