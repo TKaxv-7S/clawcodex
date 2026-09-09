@@ -342,6 +342,22 @@ def test_a_cut_level_keeps_the_alphabetical_head(workspace, monkeypatch):
     assert names == ["file-0.txt", "file-1.txt", "file-2.txt"]
 
 
+def test_a_cut_level_counts_rather_than_spells_its_numbers(workspace, monkeypatch):
+    """Non-padded sequential names are what fills a directory past the cap.
+
+    In codepoint order the survivors are `file1, file10, file11, file12, file2`
+    — high numbers present, low ones missing, which is the arbitrary-looking
+    hole the ordering exists to prevent.
+    """
+    monkeypatch.setattr(workspace_files, "MAX_ENTRIES", 5)
+    for index in range(1, 13):
+        (workspace / f"file{index}.txt").write_text("x", encoding="utf-8")
+
+    names = [entry["name"] for entry in list_dir(str(workspace))["entries"]]
+
+    assert names == [f"file{index}.txt" for index in range(1, 6)]
+
+
 def test_the_cap_bounds_the_work_and_not_only_the_answer(workspace, monkeypatch):
     """Statting the whole level to return a slice of it is the same cost bug the
     cap exists to avoid: `readdir` hands over names for free, but every type and
@@ -385,9 +401,9 @@ def test_the_cap_bounds_the_work_and_not_only_the_answer(workspace, monkeypatch)
     assert [entry["name"] for entry in listing["entries"]] == [
         "file-0.txt",
         "file-1.txt",
-        "file-10.txt",
-        "file-11.txt",
-        "file-12.txt",
+        "file-2.txt",
+        "file-3.txt",
+        "file-4.txt",
     ]
     assert listing["truncated"] is True
     # Only the five that were returned were ever asked about.

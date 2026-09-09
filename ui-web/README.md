@@ -70,9 +70,12 @@ it leaned on — and grows a tab for anything else you point it at:
   2000-entry cap is applied — and before anything is stat'd, so the cap bounds
   the work and not just the answer — which makes what `truncated` hides the
   alphabetical tail rather than an arbitrary sample of the directory. That
-  server-side order is case-insensitive by name; this column then groups
-  directories first and collates numerically, so over the cap the cut can fall a
-  few names from where the displayed list ends.
+  server-side order is the column's own collation minus one thing it cannot
+  afford: case-insensitive, digits compared as numbers (so a `chunk1…chunk5000`
+  directory keeps `chunk1`, not `chunk1, chunk10, chunk100`), but **not**
+  directories-first — that needs every child's type, which is the stat-per-child
+  the cut exists to avoid. So over the cap the cut can still fall a few names
+  from where the displayed list ends.
 - **A file** opens as its own tab, read a page at a time (`fs.read_file`, 2000
   lines per page), with **Load more** at the end of the loaded text until the
   file ends. A `read` row in the conversation hands its 1-based `offset` along,

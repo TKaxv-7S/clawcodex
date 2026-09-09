@@ -28,6 +28,7 @@ Reads are paged by line, never whole: a file has no bound, and a page does.
 from __future__ import annotations
 
 import os
+import re
 import stat as stat_module
 from pathlib import Path
 from typing import Any
@@ -49,6 +50,28 @@ def _failure(code: str, message: str, **details: Any) -> dict[str, Any]:
     if details:
         error["details"] = details
     return {"ok": False, "error": error}
+
+
+def _order(name: str) -> tuple[tuple[tuple[int, Any], ...], str]:
+    """Sort key for one directory entry: case-insensitive, digits as numbers.
+
+    The client collates the level it receives with
+    ``Intl.Collator(numeric: true, sensitivity: 'base')``, and over the entry
+    cap the *server's* order decides which names survive — so a cut made in
+    codepoint order keeps ``file1, file10, file100`` and drops ``file2``
+    through ``file9``, which is the arbitrary-looking hole this ordering exists
+    to prevent. Non-padded sequential names are exactly what fills a directory
+    past the cap.
+
+    Costs no syscall: a name is all it reads. The full name is the tie-break, so
+    two entries differing only in case still have a stable order.
+    """
+    parts = tuple(
+        (1, int(part)) if part.isdigit() else (0, part)
+        for part in re.split(r"(\d+)", name.lower())
+    )
+
+    return parts, name
 
 
 def _inside(root: Path, path: Path) -> bool:
@@ -235,12 +258,12 @@ def list_dir(root: str, path: str | None = None) -> dict[str, Any]:
     walks the same directory in the same order — would keep hiding it. Cutting
     the alphabetical tail is what ``truncated`` actually claims.
 
-    The order is case-insensitive by name, which is close to but not identical
-    to the order the reader sees: the client groups directories first and
-    collates numerically (``file2`` before ``file10``). Matching that here would
-    need every child's type, which is the stat-per-child this deliberately
-    avoids — so over the cap the cut can fall a few names from where the
-    displayed list ends. Stated in ``ui-web/README.md``.
+    The order is ``_order``'s: case-insensitive, digits compared as numbers,
+    which is the client's collation minus one thing it cannot afford. The client
+    also groups **directories first**, and that does need every child's type —
+    the stat-per-child this deliberately avoids — so over the cap the cut can
+    still fall a few names from where the displayed list ends. (Accent folding
+    is the other difference, and is not chased.) Stated in ``ui-web/README.md``.
     """
     resolved = _resolve(root, path)
     if isinstance(resolved, dict):
@@ -260,7 +283,7 @@ def list_dir(root: str, path: str | None = None) -> dict[str, Any]:
             # it would make a directory of 200k children pay 200k syscalls for
             # a 2000-row answer. The cap has to bound the work, not just the
             # payload.
-            listing = sorted(scan, key=lambda item: (item.name.lower(), item.name))
+            listing = sorted(scan, key=lambda item: _order(item.name))
             truncated = len(listing) > MAX_ENTRIES
 
             for item in listing[:MAX_ENTRIES]:
