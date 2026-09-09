@@ -142,12 +142,15 @@ export function StatsPills({ model, nano = false, provider, stats }: StatsPillsP
             }}
             open={open === 'time'}
           >
+            {/* No headline figure here: the pill beside it already reads
+                "N turns · M steps", and repeating it adds nothing. The usage
+                dialog does carry one, because there the pill compacts what the
+                dialog states exactly. */}
             <div className={dialog.title}>
               <span className={dialog.titleLabel}>
                 <GaugeIcon size={14} />
                 Session stats
               </span>
-              <span className={dialog.titleValue}>{counts}</span>
             </div>
             <div aria-hidden className={dialog.rule} />
             <dl className={dialog.rows} data-session-stats-time>

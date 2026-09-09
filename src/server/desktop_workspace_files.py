@@ -244,7 +244,10 @@ def read_file(
 
     # CRLF is a line ending, not a character in the line: the client splits on
     # "\n" and would otherwise render a stray carriage return at every line end
-    # of a file written on Windows.
+    # of a file written on Windows. This costs byte fidelity knowingly — `text`
+    # is no longer a verbatim slice of the file — and it does nothing for a lone
+    # "\r", which `readline` does not split on either, so a classic-Mac file
+    # still arrives as one very long line.
     text = decoded.replace("\r\n", "\n")
     # The page's terminator is not part of its last line either: the client
     # renders one block per line and adds the break itself, and keeping the
