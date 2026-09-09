@@ -413,6 +413,62 @@ export interface DirectoryListing {
   truncated: boolean
 }
 
+/* ── workspace files (the right sidebar's tree and text preview) ──────────── */
+
+/**
+ * Why a workspace read could not be answered.
+ *
+ * These arrive *in the result*, not as an RPC rejection: the gateway's error
+ * envelope carries a message and nothing else, and the sidebar needs the code
+ * to say why in terms of the file — "that file is gone" is a different sentence
+ * from "that page is too large". Codes are the backend's `workspace-file/*`
+ * vocabulary (`src/server/desktop_workspace_files.py`).
+ */
+export interface WorkspaceFileFailure {
+  code: string
+  details?: { limit?: number }
+  message: string
+}
+
+/** Either the answer, or the reason there isn't one. */
+export type WorkspaceFileResult<T> = ({ ok: true } & T) | { error: WorkspaceFileFailure; ok: false }
+
+/** `fs.read_file` — one page of a text file's lines, from the 1-based `offset`. */
+export interface FilePage {
+  absolute_path: string
+  /** The whole file's size, not the page's. */
+  bytes: number
+  /** Whether the file ends inside this page. */
+  eof: boolean
+  /**
+   * Lines in this page. Zero means "past the end of the file"; one with an
+   * empty `text` means one empty line — which is why the count is carried
+   * rather than derived from the text.
+   */
+  lines: number
+  offset: number
+  /** The page's lines joined with `\n`, without a terminator. */
+  text: string
+  /** Changes whenever the file does; a page from another version is not merged. */
+  version: string
+}
+
+/** One child of a listed directory. */
+export interface WorkspaceEntry {
+  name: string
+  /** Files only. */
+  size?: number
+  type: 'directory' | 'file' | 'other'
+}
+
+/** `fs.list_dir` — one directory level under the session's workspace root. */
+export interface WorkspaceLevel {
+  absolute_path: string
+  entries: WorkspaceEntry[]
+  /** True when the level was cut at the backend's entry cap. */
+  truncated: boolean
+}
+
 /** Approval answers the gateway understands (`approval.respond`). */
 export type ApprovalChoice = 'allow' | 'deny' | 'session' | 'always'
 
