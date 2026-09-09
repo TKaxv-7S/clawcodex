@@ -34,7 +34,12 @@
 }
 
 /* Above the overlay so it is legible, transparent to the pointer so the
-   overlay still receives the click… */
+   overlay still receives the click…
+
+   This layering has NO test behind it: jsdom does no CSS hit-testing, so a
+   click in a unit test reaches its target whatever `pointer-events` says. An
+   edit here can break either the row's disclosure or a summary's own button
+   with the whole suite still green — check it in a browser. */
 .leading,
 .title,
 .sep,

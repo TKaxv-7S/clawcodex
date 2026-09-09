@@ -277,6 +277,9 @@ def test_a_link_out_of_the_workspace_is_not_offered_as_openable(workspace, tmp_p
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX directory permissions")
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores the mode bits"
+)
 def test_an_unreadable_directory_does_not_read_as_a_missing_one(workspace):
     locked = workspace / "locked"
     locked.mkdir()
