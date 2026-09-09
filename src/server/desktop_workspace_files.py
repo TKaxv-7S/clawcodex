@@ -8,11 +8,23 @@ time.
 Two rules shape the whole module.
 
 **Everything is confined to the workspace root.** A path is resolved (symlinks
-and all) and must land inside the resolved root; anything else is refused. That
-is not a security boundary — the agent running in this very process can read the
-disk, and the socket is loopback and token-gated — it is honesty: the sidebar
-says it is showing the workspace, so it must not be reachable through `..` or a
-symlink pointing out of the tree.
+and all) and must land inside the resolved root; anything else is refused.
+
+That is honesty, not a security boundary, and it stays honesty under every
+binding. One token gates this whole socket, so anyone who can call these two
+methods can equally call `session.create` and `prompt.submit` and have the agent
+read the disk with its own tools — including through
+`clawcodex web --allow-remote`, which changes *who can reach the socket* and not
+that conclusion. What the check buys is that a column claiming to show the
+workspace cannot be walked out of through `..` or a symlink pointing elsewhere.
+
+Containment is nonetheless decided **before** the path is inspected, where the
+reference service inspects first so a caller learns whether an outside path
+exists and what kind it is before being refused. That is a simplicity choice
+rather than a leak-prevention one — the reference's own justification, that the
+caller can already read the host through the agent, holds here too — and it
+costs exactly one sentence: a missing file outside the root reads "outside the
+workspace" rather than "gone".
 
 A deliberate divergence from the reference service, which refuses a symlink
 outright *wherever it points, including back inside the workspace*: a link into

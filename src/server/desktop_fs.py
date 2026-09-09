@@ -16,10 +16,15 @@ copying exactly:
   of jump targets rather than a string the client has to re-split.
 
 Scope: read-only, directories only. This adds no reach the agent does not
-already have — it runs in this process, whose tools can read the filesystem —
-and the transport is the same loopback, token-gated socket. What it must not do
-is *hide* a failure: an unreadable directory raises rather than returning an
-empty listing that looks like an empty folder.
+already have: one token gates the whole socket, so anyone who can browse here
+can equally start a session and have the agent's own tools read the filesystem.
+That holds however the server is bound — `clawcodex web --allow-remote` changes
+who can reach the socket, not what reaching it is worth — which is why the
+listing is unconfined by design where `desktop_workspace_files.py`, whose column
+*claims* to be showing one directory tree, is not.
+
+What it must not do is *hide* a failure: an unreadable directory raises rather
+than returning an empty listing that looks like an empty folder.
 """
 
 from __future__ import annotations
