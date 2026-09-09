@@ -110,9 +110,11 @@ resource; here it observes nothing the client can see.
 Both reads are confined to the session's workspace root, symlinks resolved
 (`src/server/desktop_workspace_files.py`). The client names the *session*, never
 the root: the backend derives the boundary, because one the client can move is
-not a boundary. That is honesty rather than a security boundary — the agent in
-that same process can read the disk — but a column that says it is showing the
-workspace must not be reachable through `..`.
+not a boundary. It is honesty rather than a security boundary, under every
+binding: one token gates the whole socket, so anyone who can call these methods
+can also start a session and have the agent read the disk with its own tools.
+What it buys is that a column claiming to show the workspace cannot be walked
+out of through `..`.
 
 ## Trajectory
 
