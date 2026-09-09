@@ -76,12 +76,13 @@ it leaned on — and grows a tab for anything else you point it at:
   directories-first — that needs every child's type, which is the stat-per-child
   the cut exists to avoid. So over the cap the cut can still fall a few names
   from where the displayed list ends.
-- **A file** opens as its own tab, read a page at a time (`fs.read_file`, 2000
+- **A file** opens as its own tab, read a page at a time (`fs.read_file`, 5000
   lines per page), with **Load more** at the end of the loaded text until the
   file ends. A `read` row in the conversation hands its 1-based `offset` along,
   so the file opens where the agent was looking — walking forward at most five
   pages, because each page is a round trip whose backend re-reads the lines
-  before it. Wrap, scroll offset and the page you were on live with the tab, not
+  before it. Five pages of 5000 is how far a jump reaches; past that it lands on
+  the last loaded line, beside **Load more**. Wrap, scroll offset and the page you were on live with the tab, not
   with the component — switching tabs and coming back does not re-read anything.
   A page is also capped at 2 MB, and a page over that is **refused** rather than
   truncated: a file whose first line is bigger than the cap (a minified bundle,
@@ -101,7 +102,10 @@ file the agent is writing changes repeatedly.
 For the same reason a file **deleted** under the reader says nothing: there is
 no `stat` channel to fail on, so the loaded pages simply stay on screen until
 Reload reports it. A failure while *reading* is announced, at the end of the
-loaded text — but a file already read to `eof` has no next page to fail.
+loaded text — but a file already read to `eof` has no next page to fail. Nor
+does the agent merely *reading* a file that something else changed raise the
+notice, as it does upstream: there, the read observes a new version through the
+resource; here it observes nothing the client can see.
 
 Both reads are confined to the session's workspace root, symlinks resolved
 (`src/server/desktop_workspace_files.py`). The client names the *session*, never

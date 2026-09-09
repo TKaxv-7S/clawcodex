@@ -181,6 +181,41 @@ describe('loadPage', () => {
   })
 })
 
+describe('the change notice clock', () => {
+  it('belongs to the version on screen, not to the newest page', async () => {
+    // Paging forward would otherwise refresh it and clear the notice through a
+    // gesture that is not Reload, leaving the reader a stale top and nothing
+    // saying so. The clock is driven, because two real reads land in the same
+    // millisecond and the assertion would hold either way.
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000)
+
+    request.mockResolvedValueOnce(page({ eof: false }))
+    await loadPage('t1', '/repo/a.ts', 1)
+
+    clock.mockReturnValue(2_000)
+    request.mockResolvedValueOnce(page({ lines: 1, offset: 3, text: 'three' }))
+    await loadPage('t1', '/repo/a.ts', 3)
+
+    expect($textTabs.get().t1?.readAt).toBe(1_000)
+    clock.mockRestore()
+  })
+
+  it('restarts with the walk when a reload reads the file again', async () => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000)
+
+    request.mockResolvedValueOnce(page())
+    await loadPage('t1', '/repo/a.ts', 1)
+
+    clock.mockReturnValue(2_000)
+    request.mockResolvedValueOnce(page({ text: 'fresh', version: 'v2' }))
+    await reloadPages('t1', '/repo/a.ts')
+
+    expect($textTabs.get().t1?.readAt).toBe(2_000)
+    expect($textTabs.get().t1?.pages[1]?.text).toBe('fresh')
+    clock.mockRestore()
+  })
+})
+
 describe('reloadPages', () => {
   it('drops every page and reads the first one again', async () => {
     request.mockResolvedValueOnce(page({ eof: false }))

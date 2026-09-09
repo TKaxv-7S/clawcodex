@@ -14,6 +14,13 @@ disk, and the socket is loopback and token-gated — it is honesty: the sidebar
 says it is showing the workspace, so it must not be reachable through `..` or a
 symlink pointing out of the tree.
 
+A deliberate divergence from the reference service, which refuses a symlink
+outright *wherever it points, including back inside the workspace*: a link into
+a project is an ordinary way to reach a file, and refusing one that resolves
+inside the tree would surprise the reader for no gain the containment check does
+not already give. A link that resolves outside is refused, and the tree types it
+`other` rather than offering a click that would fail.
+
 **Failure is part of the answer, not an exception.** The gateway's error
 envelope carries a message and nothing else (`desktop_gateway.py::_dispatch`),
 and a reader needs the *code* to say why in terms of the file — "that file is
@@ -33,9 +40,15 @@ import stat as stat_module
 from pathlib import Path
 from typing import Any
 
-# One page of lines. The reader asks for the next page when it reaches the end
-# of the loaded text, so this bounds a single response, not the file.
-MAX_LINES = 2000
+# One page of lines — the reference service's own default. The reader asks for
+# the next page when it reaches the end of the loaded text, so this bounds a
+# single response, not the file; the byte cap below is what actually binds on a
+# page of long lines.
+#
+# It also multiplies with the client's jump-to-line bound (`WALK_PAGE_LIMIT`):
+# five pages of 2000 put a `read` row's line 12,000 out of reach, where five of
+# 5000 reach 25,000 for the same number of round trips.
+MAX_LINES = 5000
 # ...and one page's bytes, independently: 2000 lines of minified JavaScript is
 # not a page anybody wants delivered over a socket that also carries the turn.
 MAX_BYTES = 2 * 1024 * 1024

@@ -134,13 +134,6 @@ export function TextPreview({ path, tabId }: TextPreviewProps) {
     started,
   ])
 
-  // $transcript changes on every streamed token, and this walks every node in
-  // it; without the memo an open preview pays that per token.
-  const changedNow = useMemo(
-    () => changedSince(transcript.nodes, path, state?.readAt ?? 0, workspace),
-    [transcript.nodes, path, state?.readAt, workspace],
-  )
-
   const rows = useMemo(
     () =>
       pages.map(page => (
@@ -178,7 +171,11 @@ export function TextPreview({ path, tabId }: TextPreviewProps) {
   const reload = () => {
     void reloadPages(tabId, path)
   }
-  const changed = changedNow
+  // Deliberately not memoised: the transcript rebuilds its node array on every
+  // streamed token, so any memo keyed on it re-runs anyway. `changedSince`
+  // scans backwards from the newest node and stops at the first write it
+  // wants, which is the bound that actually holds.
+  const changed = changedSince(transcript.nodes, path, state.readAt, workspace)
 
   return (
     <div className={css.root} data-preview-state="text">
