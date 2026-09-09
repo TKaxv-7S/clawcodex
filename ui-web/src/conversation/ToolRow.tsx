@@ -18,6 +18,7 @@ import { OutputBlock } from '../ui/primitives/OutputBlock.tsx'
 import { ReadBlock } from '../ui/primitives/ReadBlock.tsx'
 import { TerminalBlock } from '../ui/primitives/TerminalBlock.tsx'
 import { WebBlock } from '../ui/primitives/WebBlock.tsx'
+import { openFile } from '../sidebar-right/store.ts'
 import type { ToolNode } from '../state/transcript.ts'
 import {
   describeTool,
@@ -25,6 +26,8 @@ import {
   genericBodyText,
   prettyMaybeJson,
   readTaskEntries,
+  toolFileLine,
+  toolFilePath,
   readTodos,
   synthesizeDiff,
   type ToolIconName,
@@ -171,11 +174,30 @@ function ToolRowImpl({ node, workspace }: ToolRowProps) {
 
   // A file tool's path replaces the summary: it is the one thing worth reading
   // on that row, and it deserves the monospace treatment a summary does not.
+  // It is also the way into the file — clicking opens it in the sidebar, at the
+  // line a `read` started from, so the row is a reference and not just a label.
+  const filePath = toolFilePath(node, workspace)
   const summary =
     view.path !== undefined && view.path !== '' ? (
-      <span className={css.path} title={view.path}>
-        {view.path}
-      </span>
+      filePath === '' ? (
+        <span className={css.path} title={view.path}>
+          {view.path}
+        </span>
+      ) : (
+        <button
+          className={[css.path, css.pathLink].join(' ')}
+          onClick={event => {
+            // The row's own disclosure is the outer click target; opening a
+            // file is a different intent and must not also toggle the card.
+            event.stopPropagation()
+            openFile(filePath, toolFileLine(node))
+          }}
+          title={`Open ${filePath}`}
+          type="button"
+        >
+          {view.path}
+        </button>
+      )
     ) : (
       view.summary
     )

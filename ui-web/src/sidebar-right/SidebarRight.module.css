@@ -1,0 +1,142 @@
+/* The right column. One strip of chrome above one body; the body's own scroller
+   belongs to whichever tab is drawing. */
+.root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--cc-alias-bg-base);
+  --cc-scrollbar-thumb: var(--cc-alias-scrollbar-bg-l2);
+  --cc-scrollbar-thumb-hover: var(--cc-alias-scrollbar-hover-l2);
+}
+
+/* Full screen leaves the grid track behind and covers the frame. The track
+   keeps its width underneath, so leaving is a straight swap back rather than a
+   re-solve of the columns. */
+.root[data-fullscreen] {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  border-left: none;
+}
+
+/* One centre line for the whole strip: every child is 24px tall, so a chip's
+   text and a control's glyph never sit at different heights. */
+.strip {
+  display: flex;
+  flex: none;
+  gap: 2px;
+  align-items: center;
+  min-height: 36px;
+  padding: 6px;
+  border-bottom: 1px solid var(--cc-alias-border-l2);
+}
+
+/* The chips are the strip's one shrinking part: a narrow column costs tab
+   titles, never the controls after them. */
+.chips {
+  display: flex;
+  flex: 0 1 auto;
+  gap: 2px;
+  align-items: center;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* Takes the free space and gives it all back first, so shortage lands on the
+   chips alone. */
+.fill {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.chip {
+  display: flex;
+  flex: 0 1 auto;
+  gap: 2px;
+  align-items: center;
+  min-width: 44px;
+  max-width: 150px;
+  height: 24px;
+  padding-right: 4px;
+  border-radius: 12px;
+  color: var(--cc-alias-label-secondary);
+  font-size: 12px;
+  line-height: 24px;
+  white-space: nowrap;
+}
+
+.chip:hover {
+  background: var(--cc-alias-interactive-bg-hover);
+}
+
+/* The active chip is the filled capsule; the rest are bare text. */
+.chipActive {
+  background: var(--cc-alias-interactive-bg-active);
+  color: var(--cc-alias-label-primary);
+}
+
+.chipTitle {
+  min-width: 0;
+  height: 100%;
+  padding: 0 4px 0 10px;
+  overflow: hidden;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.chipClose {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.chipClose:hover {
+  background: var(--cc-alias-interactive-bg-active);
+  color: var(--cc-alias-label-primary);
+}
+
+.tool {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--cc-alias-label-secondary);
+  cursor: pointer;
+}
+
+.tool:hover {
+  background: var(--cc-alias-interactive-bg-hover);
+  color: var(--cc-alias-label-primary);
+}
+
+.body {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
+
+.body > * {
+  flex: 1 1 auto;
+  min-width: 0;
+}

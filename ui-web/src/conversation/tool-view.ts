@@ -233,6 +233,47 @@ function argPath(args: Record<string, unknown>): string {
   )
 }
 
+/** The file tools, by their adapted names — the ones that name a path. */
+export const FILE_TOOLS = new Set(['edit_file', 'read_file', 'write_file'])
+
+const ABSOLUTE = /^([/\\]|[A-Za-z]:[/\\])/
+
+/**
+ * The path a file tool touched, as an absolute one.
+ *
+ * A tool may report a path relative to the working directory; the sidebar opens
+ * files by absolute path, so the workspace root is joined on here — with the
+ * separator the root itself uses, because a Windows root joined with `/` is a
+ * path no Windows API will take.
+ */
+export function toolFilePath(node: ToolNode, workspace?: string): string {
+  if (!FILE_TOOLS.has(node.name)) return ''
+
+  const path = argPath(node.args) || str(node.result?.path)
+
+  if (path === '' || ABSOLUTE.test(path)) return path
+  if (workspace === undefined || workspace === '') return path
+
+  const separator = workspace.includes('\\') && !workspace.includes('/') ? '\\' : '/'
+  const root = workspace.replace(/[/\\]$/, '')
+
+  return `${root}${separator}${path.replace(/^\.[/\\]/, '')}`
+}
+
+/**
+ * The 1-based line a `read_file` call started at, when it named one.
+ *
+ * Carried so that opening the file from that row lands where the agent looked
+ * rather than at the top of a file it read the middle of.
+ */
+export function toolFileLine(node: ToolNode): number | undefined {
+  if (node.name !== 'read_file') return undefined
+
+  const offset = num(node.args.offset)
+
+  return offset !== undefined && offset > 0 ? offset : undefined
+}
+
 function countLabel(count: number | undefined, singular: string, plural = `${singular}s`): string {
   if (count === undefined) return ''
 

@@ -1,48 +1,11 @@
+/* What this session has done, as one tab of the right column. The strip above
+   owns the chrome; this is only the body. */
 .root {
   display: flex;
   flex-direction: column;
   height: 100%;
   min-width: 0;
   overflow: hidden;
-  background: var(--cc-alias-bg-base);
-  --cc-scrollbar-thumb: var(--cc-alias-scrollbar-bg-l2);
-  --cc-scrollbar-thumb-hover: var(--cc-alias-scrollbar-hover-l2);
-}
-
-.header {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 48px;
-  padding: 8px 12px 8px 16px;
-  border-bottom: 1px solid var(--cc-alias-border-l2);
-  color: var(--cc-alias-label-primary);
-  font-size: 14px;
-  font-weight: 500;
-}
-
-.spacer {
-  flex: 1;
-}
-
-.iconButton {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  border: none;
-  border-radius: 50%;
-  background: transparent;
-  color: var(--cc-alias-label-secondary);
-  cursor: pointer;
-}
-
-.iconButton:hover {
-  background: var(--cc-alias-interactive-bg-hover);
-  color: var(--cc-alias-label-primary);
 }
 
 .body {
@@ -117,12 +80,24 @@
 .filePath {
   flex: 1 1 auto;
   min-width: 0;
+  padding: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  /* The tail identifies the file, so the head is the part that goes. */
   direction: rtl;
   unicode-bidi: plaintext;
   text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.filePath:hover {
+  color: var(--cc-alias-label-primary);
+  text-decoration: underline;
 }
 
 .fileVerb {

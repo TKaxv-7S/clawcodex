@@ -1,0 +1,159 @@
+/* One file in the sidebar: a path row that stays put, and the text under it as
+   the only scroller — so a jump-to-line scrolls the right element and the
+   controls never travel with the content. */
+.root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.status {
+  padding: 12px;
+  color: var(--cc-alias-label-tertiary);
+  font-size: 12px;
+}
+
+.header {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  height: 28px;
+  padding: 0 6px 0 10px;
+  border-bottom: 1px solid var(--cc-alias-border-l1);
+}
+
+.path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--cc-alias-label-tertiary);
+  font-size: 12px;
+  white-space: nowrap;
+  /* The tail is the part that identifies the file, so the head is what goes.
+     `plaintext` is load-bearing: without it the RTL paragraph moves the
+     leading "/" of an absolute path to the end, and every path renders with a
+     phantom trailing slash. */
+  direction: rtl;
+  unicode-bidi: plaintext;
+  text-align: left;
+  text-overflow: ellipsis;
+}
+
+.tool {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--cc-alias-label-secondary);
+  cursor: pointer;
+}
+
+.tool:hover {
+  background: var(--cc-alias-interactive-bg-hover);
+  color: var(--cc-alias-label-primary);
+}
+
+.toolOn {
+  background: var(--cc-alias-interactive-bg-active);
+  color: var(--cc-alias-label-primary);
+}
+
+/* The file changed, or its metadata failed. Above the path row, so it is the
+   first thing read and the text below it stays where the reader left it. */
+.notice {
+  display: flex;
+  flex: none;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0;
+  padding: 6px 10px;
+  background: var(--cc-alias-state-warn-tertiary);
+  color: var(--cc-alias-state-warn-primary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.action {
+  flex: none;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 10px 0;
+  overflow: auto;
+  font-family: var(--cc-font-family-code);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.page {
+  margin: 0;
+  font: inherit;
+}
+
+.line {
+  padding: 0 12px;
+  white-space: pre;
+}
+
+/* Wrapped, a long line never scrolls the column sideways; unwrapped, the body
+   is the one thing that scrolls horizontally. */
+.wrap .line {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.lineTarget {
+  background: var(--cc-alias-state-business-tertiary, var(--cc-alias-interactive-bg-hover));
+}
+
+.statusLine {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 4px 0 0;
+  padding: 6px 12px;
+  color: var(--cc-alias-state-error-primary);
+  font-family: var(--cc-font-family);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.more {
+  display: block;
+  width: calc(100% - 24px);
+  margin: 6px 12px;
+  padding: 4px 0;
+  border: 1px solid var(--cc-alias-border-l2);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--cc-alias-label-secondary);
+  font-family: var(--cc-font-family);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.more:hover:not(:disabled) {
+  background: var(--cc-alias-interactive-bg-hover);
+  color: var(--cc-alias-label-primary);
+}
+
+.more:disabled {
+  color: var(--cc-alias-label-tertiary);
+  cursor: default;
+}

@@ -266,3 +266,63 @@ export const ShieldAlertIcon = (p: IconProps) => (
     <path d="M12 7.6v4.6M12 15.4h.01" />
   </Svg>
 )
+
+/* ── the right sidebar and the stats pills ───────────────────────────────── */
+
+export const FolderOpenIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M4 20a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v1" />
+    <path d="m3.5 20 2.6-7.3A1 1 0 0 1 7 12h13.4a1 1 0 0 1 .95 1.32L19 20Z" />
+  </Svg>
+)
+
+export const RefreshIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M20.5 9A8.5 8.5 0 0 0 5.6 6.6L3 9" />
+    <path d="M3.5 15A8.5 8.5 0 0 0 18.4 17.4L21 15" />
+    <path d="M3 4v5h5M21 20v-5h-5" />
+  </Svg>
+)
+
+/** Wrap lines: a line that turns back on itself. */
+export const WrapIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M3 6h18M3 18h7" />
+    <path d="M3 12h14a3 3 0 0 1 0 6h-3" />
+    <path d="m16 15-2.5 3 2.5 3" />
+  </Svg>
+)
+
+/** Fill the frame. Four corners pushing outward. */
+export const ExpandIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M9 3H3v6M21 9V3h-6M15 21h6v-6M3 15v6h6" />
+  </Svg>
+)
+
+/** Back to the column. The same four corners, pulled in. */
+export const CollapseIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M3 9h6V3M15 3v6h6M21 15h-6v6M9 21v-6H3" />
+  </Svg>
+)
+
+/**
+ * A dial: the run's counts and speeds. The needle is drawn from a centre
+ * dropped below the arc's own, because a bottom-open arc reads high.
+ */
+export const GaugeIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M4.5 18a9 9 0 1 1 15 0" />
+    <path d="m12 14.5 3.5-4" />
+  </Svg>
+)
+
+/** Stacked platters: what the run was billed for. */
+export const DatabaseIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <ellipse cx="12" cy="5.5" rx="8" ry="3" />
+    <path d="M4 5.5v13c0 1.66 3.58 3 8 3s8-1.34 8-3v-13" />
+    <path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3" />
+  </Svg>
+)
